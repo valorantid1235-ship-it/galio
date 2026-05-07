@@ -9,9 +9,6 @@
 static page_directory_t kernel_pd_storage;
 static page_directory_t *kernel_pd = NULL;
 
-/* Assembly function to enable paging */
-extern void paging_enable_asm(u32 pd_addr);
-
 void paging_init(void) {
     kprintf("Initializing paging system...\n");
     kernel_pd = paging_create_directory();
@@ -32,7 +29,6 @@ void paging_init(void) {
     kprintf("paging_init: Mapped %u pages\n", count);
 
     /* Enable paging */
-    kprintf("paging_init: Enabling paging with CR3=%x...\n", (u32)kernel_pd->directory);
     paging_enable(kernel_pd);
     kprintf("Paging enabled successfully\n");
 }
@@ -64,7 +60,7 @@ page_directory_t *paging_create_directory(void) {
         kernel_pd_storage.tables[i] = NULL;
     }
     
-    kprintf("paging_create_directory: Directory initialized successfully\n");
+    kprintf("paging_create_directory: Directory initialized successfully (virt=%x phys=%x)\n", (u32)kernel_pd_storage.directory, pd_phys);
     return &kernel_pd_storage;
 }
 
@@ -89,21 +85,18 @@ void paging_map(page_directory_t *pd, u32 vaddr, u32 paddr, u32 flags) {
         pd->tables[pd_index] = (u32 *)pt_phys;
         
         /* Clear the page table (write to physical address/virtual mapping) */
-        for (int i = 0; i < 1024; ++i) {
+        for (auto i = 0; i < 1024; ++i) {
             pd->tables[pd_index][i] = 0;
         }
         
         /* Set PDE to point to the page table with present and RW flags */
         u32 pde = (pt_phys & 0xFFFFF000) | PAGE_PRESENT | PAGE_RW;
         pd->directory[pd_index] = pde;
-        kprintf("paging_map: Created page table [%d] at phys=%x, PDE=%x\n", pd_index, pt_phys, pde);
     }
 
     /* Set PTE to map vaddr to paddr with given flags */
     u32 pte = (paddr & 0xFFFFF000) | flags;
     pd->tables[pd_index][pt_index] = pte;
-    
-    __asm__ volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
 }
 
 void paging_unmap(page_directory_t *pd, u32 vaddr) {
@@ -140,11 +133,13 @@ void paging_enable(page_directory_t *pd) {
     
     kernel_pd = pd;
     u32 pd_addr = (u32)pd->directory;
-    kprintf("paging_enable: Loading CR3 with %x, enabling paging...\n", pd_addr);
-    
-    paging_enable_asm(pd_addr);
-    
-    kprintf("paging_enable: Paging is now active\n");
+    kprintf("paging: about to set CR3 = %x\n", pd_addr);
+    __asm__ volatile("mov %%eax, %%cr3" : : "a"(pd_addr));
+    kprintf("paging: CR3 set, about to enable paging\n");
+    u32 cr0 = 0;
+    __asm__ volatile("mov %%cr0, %%eax; or $0x80000000, %%eax; mov %%eax, %%cr0; mov %%eax, %0" : "=r"(cr0) : : "eax");
+    kprintf("paging: enabled, CR0 = %x\n", cr0);
+    kprintf("paging: pde[0]=%x pde[768]=%x\n", pd->directory[0], pd->directory[768]);
 }
 
 page_directory_t *paging_get_current(void) {
