@@ -66,7 +66,7 @@ make
 make iso
 
 # Run in QEMU with serial output
-qemu-system-i386 -cdrom galio.iso -m 128M -serial stdio
+qemu-system-i386 -cdrom galio.iso -m 128M -serial file:serial.log -monitor none -no-reboot
 
 # Or run with VGA window
 qemu-system-i386 -cdrom galio.iso -m 128M
