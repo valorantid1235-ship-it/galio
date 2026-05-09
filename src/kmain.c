@@ -74,10 +74,10 @@ void kmain(void *multiboot_ptr) {
     pmem_init(mmap_addr, mmap_length);
 
     /* Paging and heap disabled for now */
-    //kprintf("Initializing paging...\n");
-    //paging_init();
-    //kprintf("Initializing heap...\n");
-    //heap_init();
+    kprintf("Initializing paging...\n");
+    paging_init();
+    kprintf("Initializing heap...\n");
+    heap_init();
 
     kprintf("Running memory stabilization tests...\n");
     mem_test_run();
@@ -146,17 +146,17 @@ void kmain(void *multiboot_ptr) {
     kprintf("Filesystem tests completed.\n");
     kprintf("─────────────────────────────────────────────────────────────\n");
 
-    /* ELF test disabled 
-     kprintf("Loading ELF loader smoke test...\n");
-     u32 elf_entry = elf_load(&_binary_test_elf_bin_start);
-     if (elf_entry) {
-         kprintf("ELF loaded successfully, entry point: %08X\n", elf_entry);
-         kprintf("Executing test ELF...\n");
-         ((void (*)(void))elf_entry)();
-     } else {
-         kprintf("ELF_LOADER_TEST: FAILED\n");
-     }
-         */
+    /* ELF test disabled - needs proper kernel virtual address mapping */
+    // kprintf("Loading ELF loader smoke test...\n");
+    // u32 elf_entry = elf_load(&_binary_test_elf_bin_start);
+    // if (elf_entry) {
+    //     kprintf("ELF loaded successfully, entry point: %08X\n", elf_entry);
+    //     kprintf("Executing test ELF...\n");
+    //     ((void (*)(void))elf_entry)();
+    // } else {
+    //     kprintf("ELF_LOADER_TEST: FAILED\n");
+    // }
+         
 
     kprintf("\n");
     kprintf("╔════════════════════════════════════════════════════════════════╗\n");

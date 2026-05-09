@@ -18,8 +18,6 @@ void _start(void) {
     const char msg[] = "Hello from ELF!\n";
     syscall3(SYS_WRITE, 1, (int)msg, sizeof(msg) - 1);
 
-    /* Infinite loop */
-    for (;;) {
-        asm volatile("hlt");
-    }
+    /* Exit */
+    syscall3(SYS_EXIT, 0, 0, 0);
 }

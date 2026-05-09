@@ -33,7 +33,7 @@ static void shell_execute_command(void) {
         vga_clear();
     } else if (strncmp(input.buffer, "help", 4) == 0) {
         kprintf("Galio Kernel Shell - Available Commands:\n");
-        kprintf("  help     - Show this help message\n");
+        kprintf("  help     - Next time, help yourself.\n");
         kprintf("  clear    - Clear the screen\n");
         kprintf("  echo     - Echo text (usage: echo <text>)\n");
         kprintf("  uname    - Show system name\n");

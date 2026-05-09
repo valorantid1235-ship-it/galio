@@ -1,5 +1,13 @@
 #ifndef PAGING_H
 #define PAGING_H
+/* Page table entry flags */
+#define PAGE_PRESENT      0x001
+#define PAGE_RW           0x002
+#define PAGE_USER         0x004
+#define PAGE_WRITETHROUGH 0x008
+#define PAGE_NOCACHE      0x010
+#define PAGE_ACCESSED     0x020
+#define PAGE_DIRTY        0x040
 
 #include "common.h"
 
