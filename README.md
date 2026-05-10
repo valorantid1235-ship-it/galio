@@ -68,7 +68,8 @@ From the project root:
 
 ```bash
 # Build kernel
-make all 
+make all || make galio.bin
+
 
 # Create GRUB ISO
 chmod +x ./iso.sh
@@ -81,6 +82,10 @@ chmod +x ./run.sh
 # Or run with VGA window
 qemu-system-i386 -cdrom galio.iso -m 128M
 ```
+
+## OR MAKE ALL IN ONCE AND RUN
+
+make clean && rm -rf galio.iso && make all || make galio.bin && ./iso.sh && ./run.sh
 
 ---
 
