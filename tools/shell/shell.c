@@ -280,6 +280,11 @@ static void shell_poll_keyboard(void) {
         u8 is_pressed = !(scancode & 0x80);
         u8 raw_scancode = scancode & 0x7F;
 
+        if (raw_scancode == 0x2A || raw_scancode == 0x36) {
+            shift_pressed = is_pressed;
+            return;
+        }
+
         if (!is_pressed) {
             if (extended_key) extended_key = 0;
             return;
@@ -320,13 +325,6 @@ static void shell_poll_keyboard(void) {
         }
 
         if (raw_scancode >= sizeof(ascii_table)) return;
-
-        if (raw_scancode == 0x2A || raw_scancode == 0x36) {
-            shift_pressed = is_pressed;
-            if (!is_pressed) {
-                return;
-            }
-        }
 
         u8 c = shift_pressed ? ascii_table_shift[raw_scancode] : ascii_table[raw_scancode];
         if (c == 0) return;
