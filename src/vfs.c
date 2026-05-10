@@ -405,3 +405,84 @@ void vfs_tree(void) {
     }
     kprintf("================================================================\n");
 }
+
+u32 vfs_mkdir(const char *path) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return 0;
+    }
+
+    char *norm_path = path_normalize(path);
+
+    if (vfs_find(norm_path)) {
+        kprintf("[VFS] ERROR: Directory already exists: %s\n", norm_path);
+        return 0;
+    }
+
+    if (vfs_root->entry_count >= VFS_MAX_FILES) {
+        kprintf("[VFS] ERROR: Filesystem full\n");
+        return 0;
+    }
+
+    char *parent = get_parent_dir(norm_path);
+    if (__builtin_strcmp(parent, "/") != 0 && !vfs_find(parent)) {
+        kprintf("[VFS] ERROR: Parent directory does not exist: %s\n", parent);
+        return 0;
+    }
+
+    u32 idx = vfs_root->entry_count;
+    vfs_entry_t *new_entry = &vfs_root->entries[idx];
+
+    int i = 0;
+    while (norm_path[i] && i < VFS_MAX_PATH - 1) {
+        new_entry->path[i] = norm_path[i];
+        i++;
+    }
+    new_entry->path[i] = 0;
+
+    new_entry->size = 0;
+    new_entry->offset = 0;
+    new_entry->is_dir = 1;
+    new_entry->permissions = 0755;
+
+    vfs_root->entry_count++;
+
+    kprintf("[VFS] Created directory: %s\n", norm_path);
+    return 1;
+}
+
+u32 vfs_rmdir(const char *path) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return 0;
+    }
+
+    char *norm_path = path_normalize(path);
+    vfs_entry_t *entry = vfs_find(norm_path);
+
+    if (!entry) {
+        kprintf("[VFS] ERROR: Directory not found: %s\n", norm_path);
+        return 0;
+    }
+
+    if (!entry->is_dir) {
+        kprintf("[VFS] ERROR: Not a directory: %s\n", norm_path);
+        return 0;
+    }
+
+    for (u32 i = 0; i < vfs_root->entry_count; i++) {
+        vfs_entry_t *e = &vfs_root->entries[i];
+        if (e == entry) continue;
+
+        char *parent = get_parent_dir(e->path);
+        if (__builtin_strcmp(parent, norm_path) == 0) {
+            kprintf("[VFS] ERROR: Directory not empty: %s\n", norm_path);
+            return 0;
+        }
+    }
+
+    entry->size = 0;
+    entry->is_dir = 0;
+    kprintf("[VFS] Removed directory: %s\n", norm_path);
+    return 1;
+}

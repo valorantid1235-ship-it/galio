@@ -64,4 +64,8 @@ u32 vfs_count_files(const char *path);
 u32 vfs_count_dirs(const char *path);
 u32 vfs_dir_size(const char *path);
 
+/* Directory creation/deletion */
+u32 vfs_mkdir(const char *path);
+u32 vfs_rmdir(const char *path);
+
 #endif /* VFS_H */
