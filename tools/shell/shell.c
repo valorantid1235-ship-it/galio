@@ -8,6 +8,8 @@
 #include "cpu.h"
 #include "vfs.h"
 #include "auth.h"
+#include "commands/new.h"
+#include "commands/file.h"
 #define SHELL_BUFFER_SIZE 256
 #define HISTORY_SIZE 10
 #define HISTORY_BUFFER_SIZE 256
@@ -23,6 +25,13 @@ static const u8 ascii_table[] = {
     'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
     'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0,
 };
+static const u8 ascii_table_shift[] = {
+    0,  27,  '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b', '\t',
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', 0, 'A', 'S',
+    'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0, '|', 'Z', 'X', 'C', 'V',
+    'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0,
+};
+static u8 shift_pressed = 0;
 
 typedef struct {
     char buffer[SHELL_BUFFER_SIZE];
@@ -114,6 +123,14 @@ static void shell_execute_command(void) {
         } else {
             kprintf("[REX] Unknown privileged command: %s\n", cmd);
         }
+    } else if (strncmp(input.buffer, "new ", 4) == 0) {
+        shell_new_command(input.buffer + 4, current_dir);
+    } else if (strcmp(input.buffer, "new") == 0) {
+        shell_new_command("", current_dir);
+    } else if (strncmp(input.buffer, "file ", 5) == 0) {
+        shell_file_command(input.buffer + 5, current_dir, 0);
+    } else if (strcmp(input.buffer, "file") == 0) {
+        shell_file_command("", current_dir, 0);
     } else if (strncmp(input.buffer, "clear", 5) == 0) {
         vga_clear();
         kprintf("                                GSH                                  \n");
@@ -130,6 +147,11 @@ static void shell_execute_command(void) {
         kprintf(" |  mkdir    - Create directory (usage: mkdir <path>)               |\n");
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |  rmdir    - Remove directory (usage: rmdir <path>)               |\n");
+        kprintf(" |__________________________________________________________________|\n");
+        kprintf(" |  file     - Create file (usage: file <name>[.ext] [path])        |\n");
+        kprintf(" |__________________________________________________________________|\n");
+        kprintf(" |  new file - Create or replace file (usage: new file              |\n");
+        kprintf(" |         <name>[.ext] [path])                                     |\n");
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" | clear    - Clear the screen                                      |\n");
         kprintf(" |__________________________________________________________________|\n");
@@ -299,7 +321,14 @@ static void shell_poll_keyboard(void) {
 
         if (raw_scancode >= sizeof(ascii_table)) return;
 
-        u8 c = ascii_table[raw_scancode];
+        if (raw_scancode == 0x2A || raw_scancode == 0x36) {
+            shift_pressed = is_pressed;
+            if (!is_pressed) {
+                return;
+            }
+        }
+
+        u8 c = shift_pressed ? ascii_table_shift[raw_scancode] : ascii_table[raw_scancode];
         if (c == 0) return;
 
         if (c == '\b') {
@@ -336,7 +365,7 @@ void shell_run(void) {
     kprintf("                                                                       ");
     kprintf("                                                                       ");
     kprintf("                                                                      \n");
-    kprintf(" ~[ G ]    < %s >   ", current_dir);
+    kprintf(" ~[ G ]   < %s >   ", current_dir);
 
     for (;;) {
         shell_poll_keyboard();

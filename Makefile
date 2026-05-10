@@ -9,7 +9,8 @@ LDFLAGS = -m elf_i386 -T boot/linker.ld
 
 SRCS = src/kernel.c src/kmain.c src/vga.c src/gdt.c src/idt.c src/irq.c src/isr.c src/kprintf.c \
        src/serial.c src/pmem.c src/paging.c src/heap.c src/pit.c src/keyboard.c src/process.c \
-       src/syscall.c src/elf.c src/vfs.c src/string.c src/mem_test.c src/auth.c tools/shell/shell.c
+       src/syscall.c src/elf.c src/vfs.c src/string.c src/mem_test.c src/auth.c tools/shell/shell.c \
+       tools/shell/commands/file.c tools/shell/commands/new.c
 OBJS = $(SRCS:.c=.o) src/asm.o src/isr_asm.o boot/boot.o src/embedded_test.o src/embedded_initrd.o
 TEST_ELF = test_elf.bin
 INITRD_IMAGE = initrd.bin

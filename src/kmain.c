@@ -149,6 +149,10 @@ void kmain(void *multiboot_ptr) {
 
     auth_bootstrap();
 
+    vga_clear();
+    kprintf("Welcome to Galio !\n");
+    kprintf("Press c to enter GSH....\n\n");
+
     /* ELF test disabled - needs proper kernel virtual address mapping */
     // kprintf("Loading ELF loader smoke test...\n");
     // u32 elf_entry = elf_load(&_binary_test_elf_bin_start);
@@ -160,14 +164,6 @@ void kmain(void *multiboot_ptr) {
     //     kprintf("ELF_LOADER_TEST: FAILED\n");
     // }
          
-
-    kprintf("\n");
-    kprintf("╔════════════════════════════════════════════════════════════════╗\n");
-    kprintf("║                    Galio                                       ║\n");
-    kprintf("║                                                                ║\n");
-    kprintf("║       Press 'c' to enter interactive shell...                  ║\n");
-    kprintf("╚════════════════════════════════════════════════════════════════╝\n");
-    kprintf("\n");
 
     /* Disable all interrupts – we will use polling */
     __asm__ volatile("cli");

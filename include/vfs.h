@@ -68,4 +68,7 @@ u32 vfs_dir_size(const char *path);
 u32 vfs_mkdir(const char *path);
 u32 vfs_rmdir(const char *path);
 
+/* File creation */
+ u32 vfs_create(const char *path, u8 force);
+
 #endif /* VFS_H */
