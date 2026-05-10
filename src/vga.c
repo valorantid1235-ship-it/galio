@@ -1,14 +1,85 @@
 #include "vga.h"
 #include "common.h"
 #include "cpu.h"
+#include <string.h>
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
 #define VGA_COLOR_WHITE 0x0F
+#define SCROLLBACK_STEP 5
 
 static volatile u16 *vga_buf = (u16*)0xB8000;
 static u32 cursor_x = 0;
 static u32 cursor_y = 0;
+
+#define SCROLLBACK_LINES 512
+static char scrollback[SCROLLBACK_LINES][VGA_WIDTH + 1];
+static u32 scrollback_head = 0;
+static u32 scrollback_count = 0;
+static u32 scrollback_offset = 0;
+static u8 scrollback_mode = 0;
+static char current_line[VGA_WIDTH + 1];
+static u32 current_line_len = 0;
+
+static void scrollback_push_line(void) {
+    if (current_line_len >= VGA_WIDTH) {
+        current_line[VGA_WIDTH] = '\0';
+    } else {
+        current_line[current_line_len] = '\0';
+    }
+
+    if (scrollback_count < SCROLLBACK_LINES) {
+        u32 idx = (scrollback_head + scrollback_count) % SCROLLBACK_LINES;
+        strncpy(scrollback[idx], current_line, VGA_WIDTH + 1);
+        scrollback_count++;
+    } else {
+        strncpy(scrollback[scrollback_head], current_line, VGA_WIDTH + 1);
+        scrollback_head = (scrollback_head + 1) % SCROLLBACK_LINES;
+    }
+
+    current_line_len = 0;
+    current_line[0] = '\0';
+    scrollback_offset = 0;
+}
+
+static void redraw_scrollback(void) {
+    u32 line_count = scrollback_count;
+    u32 start = 0;
+
+    if (line_count > VGA_HEIGHT) {
+        u32 max_offset = line_count - VGA_HEIGHT;
+        if (scrollback_offset > max_offset) {
+            scrollback_offset = max_offset;
+        }
+        start = max_offset - scrollback_offset;
+    }
+
+    for (u32 y = 0; y < VGA_HEIGHT; y++) {
+        u32 line_index = start + y;
+        const char *line = (line_index < line_count)
+            ? scrollback[(scrollback_head + line_index) % SCROLLBACK_LINES]
+            : NULL;
+
+        for (u32 x = 0; x < VGA_WIDTH; x++) {
+            char ch = ' ';
+            if (line && x < strlen(line)) {
+                ch = line[x];
+            }
+            vga_buf[y * VGA_WIDTH + x] = (u16)(ch | (VGA_COLOR_WHITE << 8));
+        }
+    }
+
+    cursor_x = 0;
+    cursor_y = VGA_HEIGHT - 1;
+    vga_update_cursor();
+}
+
+static void ensure_live_screen(void) {
+    if (scrollback_mode) {
+        scrollback_mode = 0;
+        redraw_scrollback();
+    }
+}
 
 void vga_update_cursor(void) {
     u16 pos = cursor_y * VGA_WIDTH + cursor_x;
@@ -43,6 +114,10 @@ void vga_clear(void) {
     }
     cursor_x = 0;
     cursor_y = 0;
+    current_line_len = 0;
+    current_line[0] = '\0';
+    scrollback_mode = 0;
+    scrollback_offset = 0;
     vga_update_cursor();
 }
 
@@ -73,18 +148,30 @@ static void vga_putch_at(char c, u32 x, u32 y) {
 }
 
 void vga_backspace(void) {
+    ensure_live_screen();
     if (cursor_x > 0) {
         cursor_x--;
         vga_putch_at(' ', cursor_x, cursor_y);
+        if (current_line_len > 0) {
+            current_line_len--;
+            current_line[current_line_len] = '\0';
+        }
     } else if (cursor_y > 0) {
         cursor_y--;
         cursor_x = VGA_WIDTH - 1;
         vga_putch_at(' ', cursor_x, cursor_y);
+        if (current_line_len > 0) {
+            current_line_len--;
+            current_line[current_line_len] = '\0';
+        }
     }
     vga_update_cursor();
 }
 
 void vga_newline(void) {
+    ensure_live_screen();
+    scrollback_push_line();
+
     cursor_x = 0;
     cursor_y++;
     
@@ -110,8 +197,13 @@ void vga_putch(char c) {
     } else if (c == '\b') {
         vga_backspace();
     } else if (c >= 32 && c < 127) {
+        ensure_live_screen();
         /* Printable character */
         vga_putch_at(c, cursor_x, cursor_y);
+        if (current_line_len < VGA_WIDTH) {
+            current_line[current_line_len++] = c;
+            current_line[current_line_len] = '\0';
+        }
         cursor_x++;
         
         if (cursor_x >= VGA_WIDTH) {
@@ -119,6 +211,36 @@ void vga_putch(char c) {
         }
         vga_update_cursor();
     }
+}
+
+void vga_scrollback_up(void) {
+    if (scrollback_count <= VGA_HEIGHT) return;
+    scrollback_mode = 1;
+    u32 max_offset = scrollback_count - VGA_HEIGHT;
+    if (scrollback_offset + SCROLLBACK_STEP >= max_offset) {
+        scrollback_offset = max_offset;
+    } else {
+        scrollback_offset += SCROLLBACK_STEP;
+    }
+    redraw_scrollback();
+}
+
+void vga_scrollback_down(void) {
+    if (!scrollback_mode) return;
+    if (scrollback_offset <= SCROLLBACK_STEP) {
+        scrollback_offset = 0;
+        scrollback_mode = 0;
+    } else {
+        scrollback_offset -= SCROLLBACK_STEP;
+    }
+    redraw_scrollback();
+}
+
+void vga_show_live_screen(void) {
+    if (!scrollback_mode) return;
+    scrollback_offset = 0;
+    scrollback_mode = 0;
+    redraw_scrollback();
 }
 
 void vga_puts(const char *s) {

@@ -6,6 +6,9 @@ void vga_puts(const char *s);
 void vga_putch(char c);
 void vga_clear(void);
 void vga_move_cursor(int dx, int dy);
+void vga_scrollback_up(void);
+void vga_scrollback_down(void);
+void vga_show_live_screen(void);
 
 void vga_update_cursor(void);
 void vga_backspace(void);
