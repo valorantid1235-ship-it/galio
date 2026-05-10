@@ -44,7 +44,6 @@ static shell_history_t history = {0};
 static dir_history_t dir_history = {0};
 static u8 extended_key = 0;
 static char current_dir[256] = HOME_DIR;
-static user_session_t current_user = {0};
 
 static void shell_add_history(const char *cmd) {
     if (input.len == 0) return;
@@ -79,31 +78,40 @@ static void shell_execute_command(void) {
 
     /* Handle rex (sudo-like) commands */
     if (strncmp(input.buffer, "rex ", 4) == 0) {
-        if (!current_user.authenticated) {
-            kprintf("[REX] Access denied: User not authenticated\n");
-        } else {
-            const char *cmd = input.buffer + 4;
-
-            if (strncmp(cmd, "goto ", 5) == 0) {
-                const char *path = cmd + 5;
-                if (path[0] == '/') {
-                    strncpy(current_dir, path, 255);
-                } else {
-                    char fullpath[256];
-                    strncpy(fullpath, current_dir, 255);
-                    fullpath[255] = 0;
-                    int len = strlen(fullpath);
-                    if (len > 0 && fullpath[len-1] != '/') {
-                        strncat(fullpath, "/", 255 - len - 1);
-                    }
-                    strncat(fullpath, path, 255 - strlen(fullpath) - 1);
-                    strncpy(current_dir, fullpath, 255);
-                }
-                current_dir[255] = 0;
-                kprintf("[REX] Changed to: %s\n", current_dir);
-            } else {
-                kprintf("[REX] Unknown privileged command: %s\n", cmd);
+        if (!auth_is_authorized()) {
+            char password[INPUT_BUFFER_SIZE];
+            if (!auth_prompt_password("Password: ", password, INPUT_BUFFER_SIZE) ||
+                !auth_verify_password(kernel_auth.username, password)) {
+                kprintf("\n[REX] Access denied: Invalid password\n");
+                kprintf("[@~G ->  %s] ", current_dir);
+                input.len = 0;
+                return;
             }
+
+            auth_authorize();
+            kprintf("\n[REX] Password accepted. Privileged mode enabled.\n");
+        }
+
+        const char *cmd = input.buffer + 4;
+        if (strncmp(cmd, "goto ", 5) == 0) {
+            const char *path = cmd + 5;
+            if (path[0] == '/') {
+                strncpy(current_dir, path, 255);
+            } else {
+                char fullpath[256];
+                strncpy(fullpath, current_dir, 255);
+                fullpath[255] = 0;
+                int len = strlen(fullpath);
+                if (len > 0 && fullpath[len-1] != '/') {
+                    strncat(fullpath, "/", 255 - len - 1);
+                }
+                strncat(fullpath, path, 255 - strlen(fullpath) - 1);
+                strncpy(current_dir, fullpath, 255);
+            }
+            current_dir[255] = 0;
+            kprintf("[REX] Changed to: %s\n", current_dir);
+        } else {
+            kprintf("[REX] Unknown privileged command: %s\n", cmd);
         }
     } else if (strncmp(input.buffer, "clear", 5) == 0) {
         vga_clear();
@@ -131,6 +139,7 @@ static void shell_execute_command(void) {
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |  rex      - Privileged command (sudo-like)                       |\n");
         kprintf(" |            Usage: rex goto <path> (go to root or any dir)        |\n");
+        kprintf(" |            Password requested once per boot session             |\n");
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |  Use UP/DOWN arrows to navigate history                          |\n");
         kprintf(" |__________________________________________________________________|\n");
@@ -303,9 +312,6 @@ void shell_run(void) {
     input.len = 0;
 
     vga_clear();
-
-    /* Login required */
-    auth_login(&current_user);
 
     kprintf("[@~G ->]  Welcome to GSh \n");
     kprintf("[@~G ->  %s] ", current_dir);

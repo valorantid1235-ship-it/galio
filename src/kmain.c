@@ -14,6 +14,7 @@
 #include "elf.h"
 #include "shell.h"
 #include "cpu.h"
+#include "auth.h"
 
 /* Syscall interface declaration */
 void syscall_init(void);
@@ -145,6 +146,8 @@ void kmain(void *multiboot_ptr) {
     kprintf("\n");
     kprintf("Filesystem tests completed.\n");
     kprintf("─────────────────────────────────────────────────────────────\n");
+
+    auth_bootstrap();
 
     /* ELF test disabled - needs proper kernel virtual address mapping */
     // kprintf("Loading ELF loader smoke test...\n");

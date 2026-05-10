@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stddef.h>
 
-#define INPUT_BUFFER_SIZE 32
+user_session_t kernel_auth = {0};
 
 static u8 read_char(void) {
     while (1) {
@@ -60,8 +60,12 @@ static void read_line(char *buffer, u32 max_len, u8 echo) {
     buffer[max_len - 1] = 0;
 }
 
-/* Simple password verification - using hardcoded defaults */
+/* Simple password verification - using boot-time registration or hardcoded defaults */
 u8 auth_verify_password(const char *username, const char *password) {
+    if (kernel_auth.registered) {
+        return strcmp(username, kernel_auth.username) == 0 && strcmp(password, kernel_auth.password) == 0;
+    }
+
     /* Default credentials for testing - change in production */
     if (strcmp(username, "galio") == 0 && strcmp(password, "galio") == 0) {
         return 1;
@@ -78,42 +82,65 @@ u8 auth_verify_password(const char *username, const char *password) {
 void auth_show_login_prompt(void) {
     kprintf("\n");
     kprintf("╔══════════════════════════════════════════════════════════════╗\n");
-    kprintf("║             Welcome to Galio Kernel Shell                   ║\n");
-    kprintf("║                   Please Log In                              ║\n");
+    kprintf("║           Galio Kernel Registration                          ║\n");
+    kprintf("║          Create a kernel account for privileged access       ║\n");
     kprintf("╚══════════════════════════════════════════════════════════════╝\n");
     kprintf("\n");
 }
 
-void auth_login(user_session_t *session) {
+void auth_bootstrap(void) {
+    if (kernel_auth.registered) {
+        return;
+    }
+
     char username[INPUT_BUFFER_SIZE];
     char password[INPUT_BUFFER_SIZE];
-    u32 attempts = 0;
-    const u32 MAX_ATTEMPTS = 3;
+    char confirm[INPUT_BUFFER_SIZE];
 
     auth_show_login_prompt();
 
-    while (attempts < MAX_ATTEMPTS) {
+    while (1) {
         kprintf("Username: ");
-        read_line(username, INPUT_BUFFER_SIZE, 1);  /* Echo username */
+        read_line(username, INPUT_BUFFER_SIZE, 1);
 
         kprintf("Password: ");
-        read_line(password, INPUT_BUFFER_SIZE, 0);  /* Hide password */
+        read_line(password, INPUT_BUFFER_SIZE, 0);
 
-        if (auth_verify_password(username, password)) {
-            strncpy(session->username, username, 31);
-            session->username[31] = 0;
-            strncpy(session->password, password, 31);
-            session->password[31] = 0;
-            session->authenticated = 1;
-            kprintf("\n[AUTH] Welcome %s!\n\n", username);
-            return;
+        kprintf("Confirm Password: ");
+        read_line(confirm, INPUT_BUFFER_SIZE, 0);
+
+        if (username[0] == 0 || password[0] == 0) {
+            kprintf("[AUTH] Username and password cannot be empty. Try again.\n\n");
+            continue;
+        }
+        if (strcmp(password, confirm) != 0) {
+            kprintf("[AUTH] Passwords do not match. Try again.\n\n");
+            continue;
         }
 
-        attempts++;
-        kprintf("[AUTH] Invalid credentials! Attempts remaining: %u\n\n", MAX_ATTEMPTS - attempts);
-    }
+        strncpy(kernel_auth.username, username, sizeof(kernel_auth.username) - 1);
+        kernel_auth.username[sizeof(kernel_auth.username) - 1] = 0;
+        strncpy(kernel_auth.password, password, sizeof(kernel_auth.password) - 1);
+        kernel_auth.password[sizeof(kernel_auth.password) - 1] = 0;
+        kernel_auth.registered = 1;
+        kernel_auth.authenticated = 0;
 
-    /* Max attempts exceeded */
-    kprintf("[AUTH] Maximum login attempts exceeded. System halting.\n");
-    for(;;) __asm__ volatile("cli; hlt");
+        kprintf("\n[AUTH] Kernel account registered for user '%s'.\n", kernel_auth.username);
+        kprintf("[AUTH] Use 'rex' in the shell to run privileged commands.\n\n");
+        return;
+    }
+}
+
+u8 auth_prompt_password(const char *prompt, char *password, u32 max_len) {
+    kprintf("%s", prompt);
+    read_line(password, max_len, 0);
+    return password[0] != 0;
+}
+
+u8 auth_is_authorized(void) {
+    return kernel_auth.authenticated;
+}
+
+void auth_authorize(void) {
+    kernel_auth.authenticated = 1;
 }
