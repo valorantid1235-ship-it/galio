@@ -116,7 +116,14 @@ static void shell_execute_command(void) {
         }
     } else if (strncmp(input.buffer, "clear", 5) == 0) {
         vga_clear();
-    } else if (strncmp(input.buffer, "help", 4) == 0) {
+        kprintf("                                GSH                                         \n");
+        kprintf("                                                                             \n");
+        kprintf("                                                                             \n");
+        kprintf("                                                                             \n");
+       // kprintf("_____________________________________________________________________________");
+    }
+    
+    else if (strncmp(input.buffer, "help", 4) == 0) {
         kprintf("\n____________________________________________________________________\n");
         kprintf(" |                     GSH  - Available Commands:                   |\n");
         kprintf(" |__________________________________________________________________|\n");
@@ -145,6 +152,8 @@ static void shell_execute_command(void) {
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |      *****    NEXT TIME HELP YOURSELF    *****                   |\n");
         kprintf(" |__________________________________________________________________|\n");
+        kprintf("                                                                      \n");
+        kprintf("                                                                      \n");
     } else if (strncmp(input.buffer, "ls", 2) == 0) {
         vfs_listdir(current_dir);
     } else if (strncmp(input.buffer, "mkdir ", 6) == 0) {
@@ -317,8 +326,12 @@ void shell_run(void) {
     strncpy(current_dir, HOME_DIR, sizeof(current_dir) - 1);
     current_dir[sizeof(current_dir) - 1] = 0;
 
-    kprintf("[@~G ->]  Welcome to GSh \n");
-    kprintf("[@~G ->  %s] ", current_dir);
+    kprintf("                       Welcome to GSh !                                      \n");
+    kprintf("_____________________________________________________________________________");
+    kprintf("                                                                             \n");
+    kprintf("                                                                             \n");
+    kprintf("                                                                             \n");
+    kprintf(" ~[G] <%s>  ", current_dir);
 
     for (;;) {
         shell_poll_keyboard();
