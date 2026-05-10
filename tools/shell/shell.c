@@ -7,11 +7,13 @@
 #include <stddef.h>
 #include "cpu.h"
 #include "vfs.h"
+#include "auth.h"
 #define SHELL_BUFFER_SIZE 256
 #define HISTORY_SIZE 10
 #define HISTORY_BUFFER_SIZE 256
 #define DIR_HISTORY_SIZE 32
 #define DIR_PATH_SIZE 256
+#define HOME_DIR "/home"
 
 /* ASCII lookup table for scancodes */
 static const u8 ascii_table[] = {
@@ -41,7 +43,8 @@ static shell_input_t input;
 static shell_history_t history = {0};
 static dir_history_t dir_history = {0};
 static u8 extended_key = 0;
-static char current_dir[256] = "/";
+static char current_dir[256] = HOME_DIR;
+static user_session_t current_user = {0};
 
 static void shell_add_history(const char *cmd) {
     if (input.len == 0) return;
@@ -74,7 +77,35 @@ static void shell_execute_command(void) {
     shell_add_history(input.buffer);
     kprintf("\n");
 
-    if (strncmp(input.buffer, "clear", 5) == 0) {
+    /* Handle rex (sudo-like) commands */
+    if (strncmp(input.buffer, "rex ", 4) == 0) {
+        if (!current_user.authenticated) {
+            kprintf("[REX] Access denied: User not authenticated\n");
+        } else {
+            const char *cmd = input.buffer + 4;
+
+            if (strncmp(cmd, "goto ", 5) == 0) {
+                const char *path = cmd + 5;
+                if (path[0] == '/') {
+                    strncpy(current_dir, path, 255);
+                } else {
+                    char fullpath[256];
+                    strncpy(fullpath, current_dir, 255);
+                    fullpath[255] = 0;
+                    int len = strlen(fullpath);
+                    if (len > 0 && fullpath[len-1] != '/') {
+                        strncat(fullpath, "/", 255 - len - 1);
+                    }
+                    strncat(fullpath, path, 255 - strlen(fullpath) - 1);
+                    strncpy(current_dir, fullpath, 255);
+                }
+                current_dir[255] = 0;
+                kprintf("[REX] Changed to: %s\n", current_dir);
+            } else {
+                kprintf("[REX] Unknown privileged command: %s\n", cmd);
+            }
+        }
+    } else if (strncmp(input.buffer, "clear", 5) == 0) {
         vga_clear();
     } else if (strncmp(input.buffer, "help", 4) == 0) {
         kprintf("\n____________________________________________________________________\n");
@@ -97,6 +128,9 @@ static void shell_execute_command(void) {
         kprintf(" |  goto     - Change directory (usage: goto <path>)                |\n");
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |  back     - Go back to previous directory                        |\n");
+        kprintf(" |__________________________________________________________________|\n");
+        kprintf(" |  rex      - Privileged command (sudo-like)                       |\n");
+        kprintf(" |            Usage: rex goto <path> (go to root or any dir)        |\n");
         kprintf(" |__________________________________________________________________|\n");
         kprintf(" |  Use UP/DOWN arrows to navigate history                          |\n");
         kprintf(" |__________________________________________________________________|\n");
@@ -269,8 +303,11 @@ void shell_run(void) {
     input.len = 0;
 
     vga_clear();
+
+    /* Login required */
+    auth_login(&current_user);
+
     kprintf("[@~G ->]  Welcome to GSh \n");
-    //kprintf("Use UP/DOWN arrows to navigate history\n");
     kprintf("[@~G ->  %s] ", current_dir);
 
     for (;;) {
