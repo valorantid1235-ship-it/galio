@@ -5,8 +5,6 @@
 #include "vfs.h"
 #include "cpu.h"
 
-extern vfs_header_t *vfs_root;
-
 #define EDITOR_BUFFER_SIZE 4096
 
 typedef struct {
@@ -62,13 +60,12 @@ static void editor_display(editor_buffer_t *buf, const char *filepath, u8 save_s
 static u32 vfs_write_file(const char *path, const u8 *data, u32 size) {
     vfs_entry_t *entry = vfs_find(path);
     if (!entry || entry->is_dir) return 0;
-    
-    entry->size = size;
-    u8 *dest = (u8 *)vfs_root + entry->offset;
-    for (u32 i = 0; i < size && i < 4096; i++) {
-        dest[i] = data[i];
-    }
-    return size;
+
+    u32 fd = vfs_open(path);
+    if (fd == VFS_INVALID_FD) return 0;
+    u32 written = vfs_write(fd, data, size);
+    vfs_close(fd);
+    return written;
 }
 
 static void editor_handle_key(editor_buffer_t *buf, u8 scancode, u8 is_pressed, 

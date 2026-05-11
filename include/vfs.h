@@ -11,6 +11,7 @@
 #define VFS_MAX_FILES 512
 #define VFS_MAX_PATH 512
 #define VFS_MAX_FILENAME 256
+#define VFS_INVALID_FD 0xFFFFFFFFu
 
 typedef struct {
     char path[VFS_MAX_PATH];
@@ -70,7 +71,13 @@ u32 vfs_dir_size(const char *path);
  u32 vfs_mkdir(const char *path, u8 force);
  u32 vfs_rmdir(const char *path);
 
-/* File creation */
+/* File creation and removal */
  u32 vfs_create(const char *path, u8 force);
+ u32 vfs_unlink(const char *path);
+
+/* File descriptor API */
+ u32 vfs_open(const char *path);
+ u32 vfs_close(u32 fd);
+ u32 vfs_write(u32 fd, const void *buffer, u32 size);
 
 #endif /* VFS_H */

@@ -1,4 +1,4 @@
-/* vfs.c - Virtual Filesystem Layer with Linux-like paths */
+/* vfs_wrapper.c - VFS public API wrappers for the new core engine */
 #include "vfs.h"
 #include "vfs_core.h"
 #include "kprintf.h"
@@ -155,7 +155,7 @@ void vfs_listdir(const char *path) {
     u32 total_dir_size = 0;
 
     for (u32 i = 0; i < dentry->inode->dirent_count; i++) {
-        vfs_dirent_t *dent = &dentry->inode->dirents[i];
+        vfs_core_dirent_t *dent = &dentry->inode->dirents[i];
         if (strcmp(dent->name, ".") == 0 || strcmp(dent->name, "..") == 0) continue;
         vfs_inode_t *child = vfs_core_inode_by_number(dent->inode_number);
         if (!child) continue;
@@ -210,22 +210,30 @@ u32 vfs_is_dir(const char *path) {
     return entry ? entry->is_dir : 0;
 }
 
+static void vfs_stats_recurse(vfs_dentry_t *node, u32 *dir_count, u32 *file_count, u32 *data_size) {
+    if (!node || !node->inode) return;
+    if (node != vfs_core_root()) {
+        if (node->inode->mode == VFS_TYPE_DIR) {
+            (*dir_count)++;
+        } else {
+            (*file_count)++;
+            *data_size += node->inode->size;
+        }
+    }
+    for (vfs_dentry_t *child = node->first_child; child; child = child->next_sibling) {
+        vfs_stats_recurse(child, dir_count, file_count, data_size);
+    }
+}
+
 void vfs_stats(void) {
     if (!vfs_root) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
         return;
     }
     u32 dirs = 0, files = 0, total_data_size = 0;
-    for (u32 i = 0; i < vfs_root->entry_count; i++) {
-        if (vfs_root->entries[i].path[0] == 0) continue;
-        if (vfs_root->entries[i].is_dir) dirs++;
-        else {
-            files++;
-            total_data_size += vfs_root->entries[i].size;
-        }
-    }
+    vfs_stats_recurse(vfs_core_root(), &dirs, &files, &total_data_size);
     kprintf("[VFS] Filesystem Statistics:\n");
-    kprintf("    Total entries:    %u\n", vfs_root->entry_count);
+    kprintf("    Total entries:    %u\n", dirs + files);
     kprintf("    Directories:      %u\n", dirs);
     kprintf("    Files:            %u\n", files);
     kprintf("    Total data size:  %u bytes (%.2f KB)\n",
@@ -239,7 +247,16 @@ void vfs_debug(void) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
         return;
     }
-    kprintf("[VFS] Debug: using new RAM-backed VFS overlay\n");
+    vfs_dentry_t *root = vfs_core_root();
+    if (!root) {
+        kprintf("[VFS] ERROR: Root directory unavailable\n");
+        return;
+    }
+    kprintf("╔════════════════════════════════════════════════════════════════╗\n");
+    kprintf("║        FILESYSTEM TREE (RAM-BACKED, WRITABLE)                  ║\n");
+    kprintf("╠════════════════════════════════════════════════════════════════╣\n");
+    vfs_print_tree_recursive(root, 0);
+    kprintf("╚════════════════════════════════════════════════════════════════╝\n");
 }
 
 u32 vfs_count_files(const char *path) {
@@ -340,5 +357,42 @@ u32 vfs_rmdir(const char *path) {
         return 0;
     }
     kprintf("[VFS] Removed directory: %s\n", norm_path);
+    return 1;
+}
+
+u32 vfs_open(const char *path) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return VFS_INVALID_FD;
+    }
+    u32 fd = vfs_core_open(path);
+    if (fd == VFS_INVALID_FD) {
+        kprintf("[VFS] ERROR: Could not open file: %s\n", path);
+    }
+    return fd;
+}
+
+u32 vfs_close(u32 fd) {
+    return vfs_core_close(fd);
+}
+
+u32 vfs_write(u32 fd, const void *buffer, u32 size) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return 0;
+    }
+    return vfs_core_write(fd, buffer, size);
+}
+
+u32 vfs_unlink(const char *path) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return 0;
+    }
+    if (!vfs_core_unlink(path)) {
+        kprintf("[VFS] ERROR: Could not unlink: %s\n", path);
+        return 0;
+    }
+    kprintf("[VFS] Removed file: %s\n", path);
     return 1;
 }
