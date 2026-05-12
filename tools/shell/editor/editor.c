@@ -180,12 +180,18 @@ u8 shell_editor(const char *filepath) {
     
     /* Display header and initial content */
     vga_clear();
-    kprintf("^X Exit | ^S Save | Galio Text Editor\n");
-    kprintf("File: %s\n", filepath);
-    kprintf("-------------------------------------------\n");
+    kprintf("_____________________________________________________________\n");
+    kprintf("                                                             \n");
+    kprintf("                     Galio Text Editor                       \n");
+    kprintf("                                                             \n");
+    kprintf("                   [File: %s]                                \n", filepath);
+    kprintf("_____________________________________________________________\n");
+    kprintf("cntrl +X Exit | ^S Save | (Make sure to save before exiting!)\n");
+    kprintf("-------------------------------------------------------------\n");
     
     if (buf.size == 0) {
         kprintf("[Empty file - start typing]\n");
+        kprintf("_____________________________________________________________\n");
     } else {
         for (u32 i = 0; i < buf.size; i++) {
             if (buf.content[i] == '\n') kprintf("\n");
@@ -193,9 +199,9 @@ u8 shell_editor(const char *filepath) {
         }
     }
     
-    kprintf("\n\n-------------------------------------------\n");
-    kprintf("Cursor position: %u chars\n", buf.size);
-    
+    //kprintf("_____________________________________________________________\n");
+    //kprintf("Cursor position: %u chars\n", buf.size);
+
     while (!exit_flag) {
         editor_poll_keyboard(&buf, &save_flag, &exit_flag, &buffer_changed);
         

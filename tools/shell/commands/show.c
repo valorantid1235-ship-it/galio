@@ -4,6 +4,7 @@
 #include "vfs.h"
 
 #define SHOW_BUFFER_SIZE 4096
+#define BOX_WIDTH 70
 
 static void safe_strcat(char *dest, const char *src, u32 max_len) {
     u32 dest_len = strlen(dest);
@@ -47,10 +48,35 @@ static void build_filepath(const char *args, const char *current_dir, char *out_
     out_path[255] = 0;
 }
 
+static void print_box_top(const char *filename) {
+    u32 name_len = strlen(filename);
+    u32 padding;
+    
+    kprintf("\n+----------------------------------------------------------------------+\n");
+    kprintf("|");
+    
+    /* Center the filename */
+    if (name_len > BOX_WIDTH - 4) {
+        kprintf(" %.30s... ", filename);
+    } else {
+        padding = (BOX_WIDTH - name_len - 2) / 2;
+        for (u32 i = 0; i < padding; i++) kprintf(" ");
+        kprintf("[ %s ]", filename);
+        for (u32 i = padding + name_len + 4; i < BOX_WIDTH; i++) kprintf(" ");
+    }
+    
+    kprintf("|\n");
+    kprintf("+----------------------------------------------------------------------+\n");
+}
+
+static void print_box_bottom(void) {
+    kprintf("+----------------------------------------------------------------------+\n");
+}
+
 u8 shell_show_command(const char *args, const char *current_dir) {
     if (!args || *args == 0) {
-        kprintf("[SHOW] Usage: show <filepath>\n");
-        kprintf("[SHOW] Example: show file.txt\n");
+        kprintf("show: missing file operand\n");
+        kprintf("Try 'show <filename>' to display file contents\n");
         return 0;
     }
 
@@ -58,23 +84,27 @@ u8 shell_show_command(const char *args, const char *current_dir) {
     build_filepath(args, current_dir, fullpath);
     
     if (fullpath[0] == 0) {
-        kprintf("[SHOW] No file specified\n");
+        kprintf("show: no file specified\n");
         return 0;
     }
 
     vfs_entry_t *entry = vfs_find(fullpath);
     if (!entry) {
-        kprintf("[SHOW] File not found: %s\n", fullpath);
+        kprintf("show: %s: No such file or directory\n", fullpath);
         return 0;
     }
 
     if (entry->is_dir) {
-        kprintf("[SHOW] %s is a directory, not a file\n", fullpath);
+        kprintf("show: %s: Is a directory\n", fullpath);
         return 0;
     }
 
     if (entry->size == 0) {
-        kprintf("[SHOW] File is empty: %s\n", fullpath);
+        print_box_top(fullpath);
+        kprintf("|                                                                      |\n");
+        kprintf("|                         [EMPTY FILE]                            |\n");
+        kprintf("|                                                                      |\n");
+        print_box_bottom();
         return 1;
     }
 
@@ -82,12 +112,40 @@ u8 shell_show_command(const char *args, const char *current_dir) {
     u32 bytes_read = vfs_read(fullpath, buffer, SHOW_BUFFER_SIZE - 1);
     buffer[bytes_read] = 0;
 
-    kprintf("\n---[ %s ]---\n", fullpath);
-    for (u32 i = 0; i < bytes_read; i++) {
-        if (buffer[i] == '\n') kprintf("\n");
-        else kprintf("%c", buffer[i]);
+    print_box_top(fullpath);
+    
+    /* Print file content */
+    u32 i = 0;
+    while (i < bytes_read) {
+        kprintf("| ");
+        
+        /* Print up to BOX_WIDTH - 4 characters per line */
+        u32 chars_printed = 0;
+        while (i < bytes_read && chars_printed < BOX_WIDTH - 4) {
+            char c = buffer[i];
+            if (c == '\n') {
+                i++;
+                break;
+            }
+            if (c == '\t') {
+                kprintf("    ");
+                chars_printed += 4;
+            } else {
+                kprintf("%c", c);
+                chars_printed++;
+            }
+            i++;
+        }
+        
+        /* Pad the rest of the line */
+        for (u32 j = chars_printed; j < BOX_WIDTH - 4; j++) {
+            kprintf(" ");
+        }
+        kprintf(" |\n");
     }
-    kprintf("\n---[ END ]---\n");
+    
+    print_box_bottom();
+    kprintf("\n");
 
     return 1;
 }
