@@ -21,6 +21,7 @@ static u8 vfs_disk_mode = 0;
 /* Public functions */
 u8 vfs_core_is_disk_mode(void) { return vfs_disk_mode; }
 void vfs_core_init_disk_mode(void) { vfs_disk_mode = 1; kprintf("[VFS] Switched to disk-backed mode (EXT2)\n"); }
+void vfs_core_disable_disk_mode(void) { vfs_disk_mode = 0; kprintf("[VFS] Disk-backed mode disabled\n"); }
 
 /* Check if an inode is a directory using EXT2 mode */
 u8 vfs_core_is_directory(u32 inode_num) {
@@ -47,6 +48,23 @@ static void vfs_reset_ram(void) {
 static void vfs_reset_cache(void) {
     for (u32 i = 0; i < VFS_MAX_DENTRY_CACHE; i++) vfs_dentry_cache[i] = NULL;
 }
+
+static void vfs_clear_root_children(void) {
+    if (!vfs_root_dentry) return;
+    vfs_root_dentry->first_child = NULL;
+    vfs_reset_cache();
+}
+
+static void vfs_clear_root_inode_dirents(void) {
+    if (!vfs_root_inode) return;
+    if (vfs_root_inode->dirents) {
+        kfree(vfs_root_inode->dirents);
+        vfs_root_inode->dirents = NULL;
+    }
+    vfs_root_inode->dirent_count = 0;
+    vfs_root_inode->dirent_capacity = 0;
+}
+
 static void vfs_reset_state(void) {
     vfs_next_inode = 0; vfs_next_dentry = 0; vfs_root_dentry = NULL; vfs_root_inode = NULL;
     for (u32 i = 0; i < VFS_MAX_INODES; i++) {
@@ -103,6 +121,7 @@ static vfs_inode_t *vfs_alloc_inode(void) {
     inode->mode = 0; inode->size = 0; inode->uid = 0; inode->gid = 0;
     inode->atime = 0; inode->mtime = 0; inode->ctime = 0; inode->link_count = 1;
     inode->block_count = 0; inode->dirent_count = 0; inode->dirent_capacity = 0; inode->dirents = NULL;
+    for (u32 i = 0; i < VFS_MAX_BLOCKS; i++) inode->blocks[i] = 0;
     vfs_next_inode++;
     return inode;
 }
@@ -236,8 +255,17 @@ static vfs_dentry_t *vfs_lookup_internal(const char *path) {
                         u32 inode_num = ext2_find_inode(path);
                         if (inode_num == 0) return NULL;
                         child_inode = vfs_alloc_inode();
+                        if (!child_inode) return NULL;
+                        ext2_inode_t disk_inode;
+                        if (ext2_read_inode(inode_num, &disk_inode) != 0) return NULL;
                         child_inode->number = inode_num;
-                        child_inode->mode = VFS_TYPE_FILE;
+                        child_inode->mode = (disk_inode.mode & EXT2_TYPE_DIR) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+                        child_inode->size = disk_inode.size;
+                        child_inode->block_count = disk_inode.blocks;
+                        child_inode->link_count = disk_inode.links_count;
+                        for (u32 j = 0; j < VFS_MAX_BLOCKS && j < 12; j++) {
+                            child_inode->blocks[j] = disk_inode.block[j];
+                        }
                     } else {
                         return NULL;
                     }
@@ -317,9 +345,16 @@ static vfs_dentry_t *vfs_make_file_internal(const char *path, u8 force, const u8
         if (!parent) return NULL;
         vfs_inode_t *new_inode = vfs_alloc_inode();
         if (!new_inode) return NULL;
+        ext2_inode_t disk_inode;
+        if (ext2_read_inode(inode_num, &disk_inode) != 0) return NULL;
         new_inode->number = inode_num;
         new_inode->mode = VFS_TYPE_FILE;
-        new_inode->size = size;
+        new_inode->size = disk_inode.size;
+        new_inode->block_count = disk_inode.blocks;
+        new_inode->link_count = disk_inode.links_count;
+        for (u32 i = 0; i < VFS_MAX_BLOCKS && i < 12; i++) {
+            new_inode->blocks[i] = disk_inode.block[i];
+        }
         vfs_dentry_t *child = vfs_create_dentry(parent, name, new_inode);
         return child;
     } else {
@@ -495,7 +530,7 @@ vfs_inode_t *vfs_core_inode_by_number(u32 inode_number) {
 }
 u32 vfs_core_unlink(const char *path) {
     if (vfs_disk_mode) {
-        return 0;
+        return ext2_unlink(path) == 0 ? 1 : 0;
     }
     vfs_dentry_t *dentry = vfs_core_lookup(path, 0);
     if (!dentry || !dentry->inode || dentry->inode->mode != VFS_TYPE_FILE) return 0;
@@ -509,7 +544,7 @@ u32 vfs_core_unlink(const char *path) {
 }
 u32 vfs_core_rmdir(const char *path) {
     if (vfs_disk_mode) {
-        return 0;
+        return ext2_rmdir(path) == 0 ? 1 : 0;
     }
     vfs_dentry_t *dentry = vfs_core_lookup(path, 0);
     if (!dentry || !dentry->inode || dentry->inode->mode != VFS_TYPE_DIR) return 0;
@@ -586,18 +621,27 @@ u32 vfs_core_stat(const char *path, void *statbuf) {
 }
 
 /* Reload root dentry from disk when switching to disk mode */
-void vfs_core_reload_root_from_disk(void) {
-    if (!vfs_disk_mode) return;
+u8 vfs_core_reload_root_from_disk(void) {
+    if (!vfs_disk_mode) return 0;
     
     ext2_inode_t root_inode;
     if (ext2_read_inode(2, &root_inode) != 0) {
         kprintf("[VFS] Failed to read root inode from disk\n");
-        return;
+        return 0;
     }
     
+    vfs_clear_root_children();
+    vfs_clear_root_inode_dirents();
+
     vfs_root_inode->number = 2;
     vfs_root_inode->mode = VFS_TYPE_DIR;
     vfs_root_inode->size = root_inode.size;
+    vfs_root_inode->block_count = root_inode.blocks;
+    vfs_root_inode->link_count = root_inode.links_count;
+    for (u32 i = 0; i < VFS_MAX_BLOCKS && i < 12; i++) {
+        vfs_root_inode->blocks[i] = root_inode.block[i];
+    }
     
-    kprintf("[VFS] Root dentry updated to disk inode 2 (mode=%u, size=%u)\n", root_inode.mode, root_inode.size);
+    kprintf("[VFS] Root dentry updated to disk inode 2 (mode=0x%x, size=%u)\n", root_inode.mode, root_inode.size);
+    return 1;
 }

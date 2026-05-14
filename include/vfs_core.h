@@ -65,7 +65,7 @@ void vfs_core_init(void *initrd_addr);
 vfs_dentry_t *vfs_core_lookup(const char *path, u32 flags);
 vfs_dentry_t *vfs_core_root(void);
 void vfs_core_build_path(vfs_dentry_t *dentry, char *buffer);
-void vfs_core_reload_root_from_disk(void);
+u8 vfs_core_reload_root_from_disk(void);
 vfs_inode_t *vfs_core_inode_by_number(u32 inode_number);
 u32 vfs_core_open(const char *path);
 u32 vfs_core_close(u32 fd);
@@ -80,6 +80,7 @@ u32 vfs_core_rmdir(const char *path);
 u32 vfs_core_unlink(const char *path);
 
 void vfs_core_init_disk_mode(void);
+u8 vfs_core_reload_root_from_disk(void);
 u8 vfs_core_is_disk_mode(void);
 u8 vfs_core_is_directory(u32 inode_num);
 

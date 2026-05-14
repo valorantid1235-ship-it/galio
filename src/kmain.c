@@ -59,11 +59,17 @@ static void vfs_populate_disk_from_initrd(void) {
     for (u32 i = 0; i < header->entry_count; i++) {
         vfs_entry_t *entry = &header->entries[i];
         if (!entry->is_dir && entry->size > 0) {
+            /* Skip files that already exist on disk to preserve user data */
+            if (ext2_find_inode(entry->path) != 0) {
+                kprintf("  Skipping existing file: %s\n", entry->path);
+                continue;
+            }
+
             /* Read file content from initrd */
             u8 *content = (u8 *)header + entry->offset;
             
-            /* Write to disk */
-            if (vfs_core_create_file(entry->path, 1)) {
+            /* Write file to disk */
+            if (vfs_core_create_file(entry->path, 0)) {
                 u32 inode = ext2_find_inode(entry->path);
                 if (inode) {
                     ext2_write_data(inode, content, entry->size);
@@ -193,13 +199,16 @@ void kmain(void *multiboot_ptr) {
     if (ext2_init() == 0) {
         kprintf("EXT2 partition mounted successfully\n");
         /* Enable disk-backed filesystem */
-        //extern void vfs_core_init_disk_mode(void);
-        //vfs_core_init_disk_mode();
-    
-        //extern void vfs_core_reload_root_from_disk(void);
-        //vfs_core_reload_root_from_disk();
-        //vfs_populate_disk_from_initrd();  /* ENABLED - root inode now initialized */
-        //vfs_verify_disk_write();          /* ENABLED - test disk write */
+        extern void vfs_core_init_disk_mode(void);
+        extern u8 vfs_core_reload_root_from_disk(void);
+
+        vfs_core_init_disk_mode();
+        if (vfs_core_reload_root_from_disk()) {
+            vfs_populate_disk_from_initrd();  /* copy initrd contents into disk only when missing */
+            vfs_verify_disk_write();          /* verify disk write/read */
+        } else {
+            kprintf("[VFS] Disk mode disabled: failed to load disk root\n");
+        }
     } else {
         kprintf("No EXT2 partition found, using RAM filesystem only\n");
     }

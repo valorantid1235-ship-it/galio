@@ -17,16 +17,21 @@ static u32 inodes_per_block;
 static u32 blocks_per_group;
 static u32 ext2_partition_lba = 0; /* LBA of the start of the EXT2 partition */
 
-/* Read a block from disk (absolute LBA) */
+/* Convert filesystem-relative block number to absolute disk LBA */
+static u32 ext2_block_to_lba(u32 block_num) {
+    return ext2_partition_lba + block_num * (block_size / 512);
+}
+
+/* Read a block from disk (filesystem-relative block number) */
 static i32 read_block(u32 block_num, void *buffer) {
-    u32 sector = block_num * (block_size / 512);
+    u32 sector = ext2_block_to_lba(block_num);
     u32 sectors = block_size / 512;
     return ata_read_sectors(sector, sectors, buffer);
 }
 
-/* Write a block to disk (absolute LBA) */
+/* Write a block to disk (filesystem-relative block number) */
 static i32 write_block(u32 block_num, const void *buffer) {
-    u32 sector = block_num * (block_size / 512);
+    u32 sector = ext2_block_to_lba(block_num);
     u32 sectors = block_size / 512;
     return ata_write_sectors(sector, sectors, buffer);
 }
@@ -68,21 +73,20 @@ static i32 ext2_read_group_descriptors(void) {
     return 0;
 }
 
-/* Read superblock (block 1) */
+/* Read superblock from disk image/partition start (offset 1024 bytes) */
 static i32 ext2_read_superblock(void) {
     u8 buffer[1024];
-    if (read_block(1, buffer) < 0)
-        return -1;
-    memcpy(&superblock, buffer, sizeof(ext2_superblock_t));  
+    if (ata_read_sectors(ext2_partition_lba + 2, 2, buffer) != 0) return -1;
+    memcpy(&superblock, buffer, sizeof(ext2_superblock_t));
     return 0;
 }
 
-/* Write superblock back to disk */
+/* Write superblock back to disk image/partition start */
 static i32 ext2_write_superblock(void) {
     u8 buffer[1024];
     memset(buffer, 0, 1024);
     memcpy(buffer, &superblock, sizeof(ext2_superblock_t));
-    return write_block(1, buffer) == 0 ? 0 : -1;
+    return ata_write_sectors(ext2_partition_lba + 2, 2, buffer) == 0 ? 0 : -1;
 }
 
 static i32 ext2_initialize_root_inode(void);
@@ -113,7 +117,10 @@ i32 ext2_init(void) {
             superblock.inodes_count, superblock.blocks_count, block_size, ext2_group_count);
 
     /* Initialize root inode if not properly set up */
-    ext2_initialize_root_inode();
+    if (ext2_initialize_root_inode() != 0) {
+        kprintf("EXT2: Root inode initialization failed\n");
+        return -1;
+    }
 
     return 0;
 }
@@ -309,7 +316,7 @@ i32 ext2_write_inode(u32 inode_num, ext2_inode_t *inode) {
 }
 
 i32 ext2_alloc_block(void) {
-    if (superblock.free_blocks_count == 0 || !group_descs) return -1;
+    if (!group_descs) return -1;
     for (u32 group = 0; group < ext2_group_count; group++) {
         u32 bitmap_block = group_descs[group].bg_block_bitmap;
         u8 bitmap[block_size];
@@ -322,8 +329,8 @@ i32 ext2_alloc_block(void) {
                         if (block_num >= superblock.blocks_count) continue;
                         bitmap[i] |= (1 << j);
                         if (write_block(bitmap_block, bitmap) != 0) return -1;
-                        superblock.free_blocks_count--;
-                        group_descs[group].bg_free_blocks_count--;
+                        if (superblock.free_blocks_count > 0) superblock.free_blocks_count--;
+                        if (group_descs[group].bg_free_blocks_count > 0) group_descs[group].bg_free_blocks_count--;
                         if (ext2_write_superblock() != 0) return -1;
                         if (ext2_write_group_descriptors() != 0) return -1;
                         return block_num;
@@ -336,7 +343,7 @@ i32 ext2_alloc_block(void) {
 }
 
 i32 ext2_alloc_inode(void) {
-    if (superblock.free_inodes_count == 0 || !group_descs) return -1;
+    if (!group_descs) return -1;
     for (u32 group = 0; group < ext2_group_count; group++) {
         u32 bitmap_block = group_descs[group].bg_inode_bitmap;
         u8 bitmap[block_size];
@@ -349,8 +356,8 @@ i32 ext2_alloc_inode(void) {
                         if (inode_num > superblock.inodes_count) continue;
                         bitmap[i] |= (1 << j);
                         if (write_block(bitmap_block, bitmap) != 0) return -1;
-                        superblock.free_inodes_count--;
-                        group_descs[group].bg_free_inodes_count--;
+                        if (superblock.free_inodes_count > 0) superblock.free_inodes_count--;
+                        if (group_descs[group].bg_free_inodes_count > 0) group_descs[group].bg_free_inodes_count--;
                         if (ext2_write_superblock() != 0) return -1;
                         if (ext2_write_group_descriptors() != 0) return -1;
                         ext2_inode_t new_inode;
@@ -424,6 +431,142 @@ i32 ext2_update_inode_size(u32 inode_num, u32 new_size) {
     return ext2_write_inode(inode_num, &inode);
 }
 
+static i32 ext2_clear_inode(u32 inode_num) {
+    if (inode_num == 0 || inode_num > superblock.inodes_count) return -1;
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return -1;
+
+    /* Free data blocks used by inode */
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        u32 block_num = inode.block[i];
+        u32 group = block_num / blocks_per_group;
+        if (group >= ext2_group_count) continue;
+        u32 bitmap_block = group_descs[group].bg_block_bitmap;
+        u8 bitmap[block_size];
+        if (read_block(bitmap_block, bitmap) != 0) continue;
+        u32 bit_index = block_num - group * blocks_per_group;
+        u32 byte_index = bit_index / 8;
+        u32 bit_offset = bit_index % 8;
+        bitmap[byte_index] &= ~(1 << bit_offset);
+        write_block(bitmap_block, bitmap);
+        if (superblock.free_blocks_count < 0xFFFFFFFFu) superblock.free_blocks_count++;
+        if (group_descs[group].bg_free_blocks_count < 0xFFFFu) group_descs[group].bg_free_blocks_count++;
+    }
+
+    /* Clear inode data */
+    memset(&inode, 0, sizeof(ext2_inode_t));
+    if (ext2_write_inode(inode_num, &inode) != 0) return -1;
+
+    /* Free inode bitmap */
+    u32 group = (inode_num - 1) / superblock.inodes_per_group;
+    u32 index = (inode_num - 1) % superblock.inodes_per_group;
+    if (group < ext2_group_count) {
+        u32 bitmap_block = group_descs[group].bg_inode_bitmap;
+        u8 bitmap[block_size];
+        if (read_block(bitmap_block, bitmap) != 0) return -1;
+        u32 byte_index = index / 8;
+        u32 bit_offset = index % 8;
+        bitmap[byte_index] &= ~(1 << bit_offset);
+        if (write_block(bitmap_block, bitmap) != 0) return -1;
+        if (superblock.free_inodes_count < 0xFFFFFFFFu) superblock.free_inodes_count++;
+        if (group_descs[group].bg_free_inodes_count < 0xFFFFu) group_descs[group].bg_free_inodes_count++;
+    }
+
+    if (ext2_write_superblock() != 0) return -1;
+    if (ext2_write_group_descriptors() != 0) return -1;
+    return 0;
+}
+
+static i32 ext2_remove_directory_entry(u32 dir_inode, const char *name) {
+    if (!name || dir_inode == 0) return -1;
+    ext2_inode_t inode;
+    if (ext2_read_inode(dir_inode, &inode) != 0) return -1;
+    u8 buffer[block_size];
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        if (read_block(inode.block[i], buffer) != 0) continue;
+        ext2_dirent_t *prev = NULL;
+        ext2_dirent_t *dent = (ext2_dirent_t *)buffer;
+        while ((u8 *)dent < buffer + block_size) {
+            if (dent->rec_len == 0 || dent->rec_len > block_size) break;
+            if (dent->inode && dent->name_len == strlen(name) && strncmp(dent->name, name, dent->name_len) == 0) {
+                if (!prev) {
+                    /* First entry should not be removed for a directory block */
+                    return -1;
+                }
+                prev->rec_len += dent->rec_len;
+                if (write_block(inode.block[i], buffer) != 0) return -1;
+                return 0;
+            }
+            prev = dent;
+            dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+        }
+    }
+    return -1;
+}
+
+static i32 ext2_parent_and_name(const char *path, char *parent, char *name) {
+    if (!path || path[0] != '/') return -1;
+    const char *last_slash = NULL;
+    for (const char *p = path; *p; p++) if (*p == '/') last_slash = p;
+    if (!last_slash) return -1;
+    if (last_slash == path) {
+        strcpy(parent, "/");
+        strcpy(name, path + 1);
+    } else {
+        u32 parent_len = last_slash - path;
+        memcpy(parent, path, parent_len);
+        parent[parent_len] = 0;
+        strcpy(name, last_slash + 1);
+    }
+    return 0;
+}
+
+i32 ext2_unlink(const char *path) {
+    if (!path || strcmp(path, "/") == 0) return -1;
+    u32 inode_num = ext2_find_inode(path);
+    if (inode_num == 0) return -1;
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return -1;
+    if (inode.mode & 0x4000) return -1; /* not a file */
+    char parent[256];
+    char filename[256];
+    if (ext2_parent_and_name(path, parent, filename) != 0) return -1;
+    u32 parent_inode_num = ext2_find_inode(parent);
+    if (parent_inode_num == 0) return -1;
+    if (ext2_remove_directory_entry(parent_inode_num, filename) != 0) return -1;
+    return ext2_clear_inode(inode_num);
+}
+
+i32 ext2_rmdir(const char *path) {
+    if (!path || strcmp(path, "/") == 0) return -1;
+    u32 inode_num = ext2_find_inode(path);
+    if (inode_num == 0) return -1;
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return -1;
+    if (!(inode.mode & 0x4000)) return -1; /* not a directory */
+    /* Ensure directory is empty except for . and .. */
+    u8 buffer[block_size];
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        if (read_block(inode.block[i], buffer) != 0) continue;
+        ext2_dirent_t *dent = (ext2_dirent_t *)buffer;
+        while ((u8 *)dent < buffer + block_size) {
+            if (dent->rec_len == 0 || dent->rec_len > block_size) break;
+            if (dent->inode && !(dent->name_len == 1 && strncmp(dent->name, ".", 1) == 0) &&
+                !(dent->name_len == 2 && strncmp(dent->name, "..", 2) == 0)) {
+                return -1;
+            }
+            dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+        }
+    }
+    char parent[256];
+    char dirname[256];
+    if (ext2_parent_and_name(path, parent, dirname) != 0) return -1;
+    u32 parent_inode_num = ext2_find_inode(parent);
+    if (parent_inode_num == 0) return -1;
+    if (ext2_remove_directory_entry(parent_inode_num, dirname) != 0) return -1;
+    return ext2_clear_inode(inode_num);
+}
+
 i32 ext2_write_data(u32 inode_num, const void *buffer, u32 size) {
     if (!buffer || size == 0) return -1;
     ext2_inode_t inode;
@@ -433,7 +576,8 @@ i32 ext2_write_data(u32 inode_num, const void *buffer, u32 size) {
     }
     u32 written = 0;
     u32 block_offset = 0;
-    u8 *data = (u8 *)buffer;
+    const u8 *data = (const u8 *)buffer;
+    u8 block_buffer[4096];
     while (written < size) {
         u32 to_write = size - written;
         if (to_write > block_size) to_write = block_size;
@@ -445,10 +589,16 @@ i32 ext2_write_data(u32 inode_num, const void *buffer, u32 size) {
                 return written ? (i32)written : -1;
             }
             inode.block[block_offset] = block_num;
+            memset(block_buffer, 0, block_size);
         } else {
             block_num = inode.block[block_offset];
+            if (read_block(block_num, block_buffer) != 0) {
+                kprintf("[EXT2] write_data: failed to read existing block %u\n", block_num);
+                return -1;
+            }
         }
-        if (write_block(block_num, data + written) != 0) {
+        memcpy(block_buffer, data + written, to_write);
+        if (write_block(block_num, block_buffer) != 0) {
             kprintf("[EXT2] write_data: write_block failed\n");
             return -1;
         }

@@ -112,4 +112,7 @@ i32 ext2_add_directory_entry(u32 dir_inode, const char *name, u32 child_inode);
 i32 ext2_update_inode_size(u32 inode_num, u32 new_size);
 i32 ext2_write_data(u32 inode_num, const void *buffer, u32 size);
 
+i32 ext2_unlink(const char *path);
+i32 ext2_rmdir(const char *path);
+
 #endif /* EXT2_H */

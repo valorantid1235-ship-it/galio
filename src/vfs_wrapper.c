@@ -268,7 +268,12 @@ void vfs_listdir(const char *path) {
         u32 total_dir_size = 0;
         
         /* Read directory blocks */
-        u8 buffer[block_size];
+        u32 blk_size = ext2_get_block_size();
+        u8 *buffer = kmalloc(blk_size);
+        if (!buffer) {
+            kprintf("[VFS] ERROR: Out of memory listing directory\n");
+            return;
+        }
         for (u32 i = 0; i < 12 && inode.block[i]; i++) {
             if (ext2_read_block(inode.block[i], buffer) != 0) continue;
             
@@ -301,7 +306,7 @@ void vfs_listdir(const char *path) {
                 dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
             }
         }
-        
+        kfree(buffer);
         kprintf("    ─────────────────────────────────────────────\n");
         kprintf("    Dirs: %u | Files: %u | Total size: %u bytes\n",
                 dir_count, file_count, total_dir_size);
@@ -639,9 +644,70 @@ u32 vfs_unlink(const char *path) {
     return 1;
 }
 
+static u8 vfs_disk_entry_is_dot(const ext2_dirent_t *dent) {
+    return (dent->name_len == 1 && dent->name[0] == '.') ||
+           (dent->name_len == 2 && dent->name[0] == '.' && dent->name[1] == '.');
+}
+
+static void vfs_build_disk_child_path(const char *parent, const ext2_dirent_t *dent, char *out_path) {
+    if (strcmp(parent, "/") == 0) {
+        strncpy(out_path, "/", VFS_MAX_PATH - 1);
+        out_path[VFS_MAX_PATH - 1] = 0;
+        strncat(out_path, dent->name, dent->name_len);
+        out_path[VFS_MAX_PATH - 1] = 0;
+        return;
+    }
+
+    strncpy(out_path, parent, VFS_MAX_PATH - 1);
+    out_path[VFS_MAX_PATH - 1] = 0;
+    if (out_path[strlen(out_path) - 1] != '/') {
+        strncat(out_path, "/", VFS_MAX_PATH - strlen(out_path) - 1);
+    }
+    strncat(out_path, dent->name, dent->name_len);
+    out_path[VFS_MAX_PATH - 1] = 0;
+}
+
+static u32 vfs_remove_recursive_disk(const char *path) {
+    if (!vfs_core_is_disk_mode()) return 0;
+    if (!path || strcmp(path, "/") == 0) return 0;
+
+    u32 inode_num = ext2_find_inode(path);
+    if (inode_num == 0) return 0;
+
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return 0;
+
+    if (!(inode.mode & 0x4000)) {
+        return ext2_unlink(path) == 0 ? 1 : 0;
+    }
+
+    u8 buffer[block_size];
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        if (ext2_read_block(inode.block[i], buffer) != 0) continue;
+        ext2_dirent_t *dent = (ext2_dirent_t *)buffer;
+        while ((u8 *)dent < buffer + block_size) {
+            if (dent->rec_len == 0 || dent->rec_len > block_size) break;
+            if (dent->inode && !vfs_disk_entry_is_dot(dent)) {
+                char child_path[VFS_MAX_PATH];
+                vfs_build_disk_child_path(path, dent, child_path);
+                if (!vfs_remove_recursive_disk(child_path)) return 0;
+            }
+            dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+        }
+    }
+
+    return ext2_rmdir(path) == 0 ? 1 : 0;
+}
+
 static u32 vfs_remove_recursive_dentry(vfs_dentry_t *dentry) {
     if (!dentry || !dentry->inode) return 0;
     if (dentry == vfs_core_root()) return 0;
+
+    if (vfs_core_is_disk_mode()) {
+        char fullpath[VFS_MAX_PATH];
+        vfs_core_build_path(dentry, fullpath);
+        return vfs_remove_recursive_disk(fullpath);
+    }
 
     if (dentry->inode->mode == VFS_TYPE_DIR) {
         vfs_dentry_t *child = dentry->first_child;
@@ -713,6 +779,42 @@ u32 vfs_remove_dir_contents(const char *path) {
     if (!vfs_root) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
         return 0;
+    }
+    if (vfs_core_is_disk_mode()) {
+        if (!path || strcmp(path, "/") == 0) {
+            kprintf("[VFS] ERROR: Cannot clear root directory contents directly\n");
+            return 0;
+        }
+        u32 inode_num = ext2_find_inode(path);
+        if (inode_num == 0) {
+            kprintf("[VFS] ERROR: Directory not found: %s\n", path);
+            return 0;
+        }
+        ext2_inode_t inode;
+        if (ext2_read_inode(inode_num, &inode) != 0) {
+            kprintf("[VFS] ERROR: Could not read directory inode: %s\n", path);
+            return 0;
+        }
+        u32 removed = 0;
+        u8 buffer[block_size];
+        for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+            if (ext2_read_block(inode.block[i], buffer) != 0) continue;
+            ext2_dirent_t *dent = (ext2_dirent_t *)buffer;
+            while ((u8 *)dent < buffer + block_size) {
+                if (dent->rec_len == 0 || dent->rec_len > block_size) break;
+                if (dent->inode && !vfs_disk_entry_is_dot(dent)) {
+                    char child_path[VFS_MAX_PATH];
+                    vfs_build_disk_child_path(path, dent, child_path);
+                    if (vfs_remove_recursive_disk(child_path)) {
+                        removed++;
+                    } else {
+                        kprintf("[VFS] ERROR: Could not remove entry: %.*s\n", dent->name_len, dent->name);
+                    }
+                }
+                dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+            }
+        }
+        return removed > 0 ? 1 : 0;
     }
     vfs_dentry_t *dentry = vfs_core_lookup(path, 0);
     if (!dentry || !dentry->inode || dentry->inode->mode != VFS_TYPE_DIR) {
