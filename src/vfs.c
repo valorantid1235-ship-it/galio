@@ -239,7 +239,11 @@ void vfs_debug(void) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
         return;
     }
-    kprintf("[VFS] Debug: using new RAM-backed VFS overlay\n");
+    if (vfs_core_is_disk_mode()) {
+        kprintf("[VFS] Debug: disk-backed EXT2 mode enabled\n");
+    } else {
+        kprintf("[VFS] Debug: using new RAM-backed VFS overlay\n");
+    }
 }
 
 u32 vfs_count_files(const char *path) {

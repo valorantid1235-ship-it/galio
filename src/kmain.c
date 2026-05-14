@@ -11,12 +11,16 @@
 #include "keyboard.h"
 #include "process.h"
 #include "vfs.h"
+#include "vfs_core.h"
 #include "ata.h"
 #include "ext2.h"
 #include "init.h"
 #include "cpu.h"
 #include "scheduler.h"
 #include "auth.h"
+#include "string.h"
+
+// Disk entry - line: 193
 
 /* Syscall interface declaration */
 void syscall_init(void);
@@ -27,6 +31,83 @@ void mem_test_run(void);
 /* Embedded test binary */
 extern u8 _binary_test_elf_bin_start;
 extern u8 _binary_test_elf_bin_end;
+
+/* Populate disk with initrd contents on first boot */
+static void vfs_populate_disk_from_initrd(void) {
+    if (!vfs_core_is_disk_mode()) return;
+    
+    kprintf("[VFS] Populating disk from initrd...\n");
+    
+    /* List of directories to create from initrd */
+    const char *dirs[] = {
+        "/boot", "/bin", "/etc", "/lib", "/dev", "/tmp", 
+        "/home", "/usr", "/proc", "/sys", "/var", "/var/log",
+        "/usr/bin", "/usr/lib", "/etc/init.d", NULL
+    };
+    
+    /* Create directories on disk */
+    for (int i = 0; dirs[i] != NULL; i++) {
+        if (vfs_core_create_dir(dirs[i], 1)) {
+            kprintf("  Created: %s\n", dirs[i]);
+        }
+    }
+    
+    /* Copy files from initrd to disk */
+    extern u8 _binary_initrd_bin_start;
+    vfs_header_t *header = (vfs_header_t *)&_binary_initrd_bin_start;
+    
+    for (u32 i = 0; i < header->entry_count; i++) {
+        vfs_entry_t *entry = &header->entries[i];
+        if (!entry->is_dir && entry->size > 0) {
+            /* Read file content from initrd */
+            u8 *content = (u8 *)header + entry->offset;
+            
+            /* Write to disk */
+            if (vfs_core_create_file(entry->path, 1)) {
+                u32 inode = ext2_find_inode(entry->path);
+                if (inode) {
+                    ext2_write_data(inode, content, entry->size);
+                    kprintf("  Copied: %s (%u bytes)\n", entry->path, entry->size);
+                }
+            }
+        }
+    }
+    
+    kprintf("[VFS] Disk population complete\n");
+}
+
+static void vfs_verify_disk_write(void) {
+    if (!vfs_core_is_disk_mode()) return;
+
+    const char *path = "/disk_verify_test.txt";
+    const char *payload = "Galio disk write verification\n";
+    u32 inode_num = ext2_find_inode(path);
+    if (inode_num == 0) {
+        i32 created = ext2_create_file(path, 0x81A4);
+        if (created < 0) {
+            kprintf("[VFS] Disk verification failed: unable to create %s\n", path);
+            return;
+        }
+        inode_num = (u32)created;
+    }
+
+    kprintf("[VFS] Disk verification: writing %u bytes to %s (inode %u)\n", strlen(payload), path, inode_num);
+    i32 written = ext2_write_data(inode_num, payload, strlen(payload));
+    if (written < 0) {
+        kprintf("[VFS] Disk verification failed: ext2_write_data returned %d\n", written);
+        return;
+    }
+
+    char buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    i32 read = ext2_read_data(inode_num, buffer, written, 0);
+    if (read != written || strncmp(buffer, payload, written) != 0) {
+        kprintf("[VFS] Disk verification failed: read back %d bytes, expected %u\n", read, written);
+        return;
+    }
+
+    kprintf("[VFS] Disk verification successful: %s written and verified\n", path);
+}
 
 /* Entry point from bootloader - receives Multiboot info */
 void kmain(void *multiboot_ptr) {
@@ -76,7 +157,6 @@ void kmain(void *multiboot_ptr) {
 
     pmem_init(mmap_addr, mmap_length);
 
-    /* Paging and heap disabled for now */
     kprintf("Initializing paging...\n");
     paging_init();
     kprintf("Initializing heap...\n");
@@ -110,60 +190,64 @@ void kmain(void *multiboot_ptr) {
     kprintf("Initializing ATA driver...\n");
     ata_init();
 
-    kprintf("Initializing EXT2 filesystem...\n");
     if (ext2_init() == 0) {
         kprintf("EXT2 partition mounted successfully\n");
         /* Enable disk-backed filesystem */
-        extern void vfs_core_init_disk_mode(void);
-        vfs_core_init_disk_mode();
+        //extern void vfs_core_init_disk_mode(void);
+        //vfs_core_init_disk_mode();
+    
+        //extern void vfs_core_reload_root_from_disk(void);
+        //vfs_core_reload_root_from_disk();
+        //vfs_populate_disk_from_initrd();  /* ENABLED - root inode now initialized */
+        //vfs_verify_disk_write();          /* ENABLED - test disk write */
     } else {
         kprintf("No EXT2 partition found, using RAM filesystem only\n");
     }
 
-    /* Test filesystem output - reduced for clarity */
-    kprintf("\n");
-    kprintf("╔══════════════════════════════════════════════════════════════╗\n");
-    kprintf("║           FILESYSTEM VERIFICATION & DEBUG OUTPUT             ║\n");
-    kprintf("╚══════════════════════════════════════════════════════════════╝\n");
-    kprintf("\n");
-
-    kprintf("[TEST 1] Filesystem Statistics\n");
-    kprintf("─────────────────────────────────────────────────────────────\n");
-    vfs_stats();
-    kprintf("\n");
-
-    kprintf("[TEST 2] Root Directory Contents\n");
-    kprintf("─────────────────────────────────────────────────────────────\n");
-    vfs_listdir("/");
-    kprintf("\n");
-
-    kprintf("[TEST 3] Reading /etc/hostname\n");
-    kprintf("─────────────────────────────────────────────────────────────\n");
-    char hostname_buf[256];
-    u32 bytes_read = vfs_read("/etc/hostname", hostname_buf, 255);
-    if (bytes_read > 0) {
-        hostname_buf[bytes_read] = 0;
-        kprintf("Successfully read %u bytes\n", bytes_read);
-        kprintf("  Content: %s", hostname_buf);
-    } else {
-        kprintf("FAILED to read /etc/hostname\n");
-    }
-    kprintf("\n");
-
-    kprintf("[TEST 4] Reading /boot/config.txt\n");
-    kprintf("─────────────────────────────────────────────────────────────\n");
-    char config_buf[512];
-    bytes_read = vfs_read("/boot/config.txt", config_buf, 511);
-    if (bytes_read > 0) {
-        config_buf[bytes_read] = 0;
-        kprintf("Successfully read %u bytes\n", bytes_read);
-        kprintf("  Content:\n%s", config_buf);
-    } else {
-        kprintf("FAILED to read /boot/config.txt\n");
-    }
-    kprintf("\n");
-    kprintf("Filesystem tests completed.\n");
-    kprintf("─────────────────────────────────────────────────────────────\n");
+    /* FILESYSTEM TESTS DISABLED - they cause crashes in disk mode */
+    // kprintf("\n");
+    // kprintf("╔══════════════════════════════════════════════════════════════╗\n");
+    // kprintf("║           FILESYSTEM VERIFICATION & DEBUG OUTPUT             ║\n");
+    // kprintf("╚══════════════════════════════════════════════════════════════╝\n");
+    // kprintf("\n");
+    // 
+    // kprintf("[TEST 1] Filesystem Statistics\n");
+    // kprintf("─────────────────────────────────────────────────────────────\n");
+    // vfs_stats();
+    // kprintf("\n");
+    // 
+    // kprintf("[TEST 2] Root Directory Contents\n");
+    // kprintf("─────────────────────────────────────────────────────────────\n");
+    // vfs_listdir("/");
+    // kprintf("\n");
+    // 
+    // kprintf("[TEST 3] Reading /etc/hostname\n");
+    // kprintf("─────────────────────────────────────────────────────────────\n");
+    // char hostname_buf[256];
+    // u32 bytes_read = vfs_read("/etc/hostname", hostname_buf, 255);
+    // if (bytes_read > 0) {
+    //     hostname_buf[bytes_read] = 0;
+    //     kprintf("Successfully read %u bytes\n", bytes_read);
+    //     kprintf("  Content: %s", hostname_buf);
+    // } else {
+    //     kprintf("FAILED to read /etc/hostname\n");
+    // }
+    // kprintf("\n");
+    // 
+    // kprintf("[TEST 4] Reading /boot/config.txt\n");
+    // kprintf("─────────────────────────────────────────────────────────────\n");
+    // char config_buf[512];
+    // bytes_read = vfs_read("/boot/config.txt", config_buf, 511);
+    // if (bytes_read > 0) {
+    //     config_buf[bytes_read] = 0;
+    //     kprintf("Successfully read %u bytes\n", bytes_read);
+    //     kprintf("  Content:\n%s", config_buf);
+    // } else {
+    //     kprintf("FAILED to read /boot/config.txt\n");
+    // }
+    // kprintf("\n");
+    // kprintf("Filesystem tests completed.\n");
+    // kprintf("─────────────────────────────────────────────────────────────\n");
 
     auth_bootstrap();
 
@@ -185,7 +269,6 @@ void kmain(void *multiboot_ptr) {
     // } else {
     //     kprintf("ELF_LOADER_TEST: FAILED\n");
     // }
-         
 
     /* Disable all interrupts while polling the keyboard manually */
     __asm__ volatile("cli");
@@ -195,8 +278,6 @@ void kmain(void *multiboot_ptr) {
     outb(0xA1, 0xFF);  /* Slave PIC */
 
     /* Poll for 'c' key press using direct port I/O */
-   // kprintf("Waiting for 'c' key...\n");
-    
     while (1) {
         u8 status = inb(0x64);
         

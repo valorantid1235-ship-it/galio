@@ -50,22 +50,29 @@ done
 # sanity checks
 command -v "${QEMU_BIN}" >/dev/null 2>&1 || { echo "Error: ${QEMU_BIN} not found in PATH"; exit 1; }
 if [ ! -f "${ISO}" ]; then
-  echo "Error: ISO '${ISO}' not found. Build it first (./iso.sh) or pass --iso <path>."
+  echo "Error: ISO '${ISO}' not found. Build it first (make or ./run.sh --iso <path> if using custom ISO)."
   exit 1
 fi
 if [ ! -f "${DISK}" ]; then
-  echo "Warning: Disk image '${DISK}' not found. Creating 64MB disk image..."
+  echo "Disk image '${DISK}' not found. Creating 64MB disk image..."
   dd if=/dev/zero of="${DISK}" bs=1M count=64 2>/dev/null || { echo "Error: Failed to create disk image"; exit 1; }
-  mkfs.ext2 "${DISK}" -q || { echo "Error: Failed to format disk with ext2"; exit 1; }
+  if command -v mkfs.ext2 >/dev/null 2>&1; then
+    mkfs.ext2 -q "${DISK}" >/dev/null 2>&1 || { echo "Error: Failed to format disk with ext2"; exit 1; }
+  elif command -v mke2fs >/dev/null 2>&1; then
+    mke2fs -t ext2 -q "${DISK}" >/dev/null 2>&1 || { echo "Error: Failed to format disk with ext2"; exit 1; }
+  else
+    echo "Error: mkfs.ext2 or mke2fs not found in PATH";
+    exit 1;
+  fi
   echo "Disk image created and formatted."
 fi
 
 if [ "${NOGRAPHIC}" = true ]; then
   # headless: print serial to stdout
   echo "Starting QEMU (headless). Serial output will appear on stdout."
-  exec ${QEMU_BIN} -cdrom "${ISO}" -drive file="${DISK}",format=raw,if=ide,cache=writeback,index=0,media=disk -m 128M -nographic -serial stdio ${EXTRA_ARGS}
+  exec ${QEMU_BIN} -cdrom "${ISO}" -drive file="${DISK}",format=raw,if=ide,cache=none,index=0,media=disk -m 128M -nographic -serial stdio ${EXTRA_ARGS}
 else
   # GUI mode, default serial -> serial.log
   echo "Starting QEMU (GUI). Serial logged to serial.log"
-  exec ${QEMU_BIN} -cdrom "${ISO}" -drive file="${DISK}",format=raw,if=ide,cache=writeback,index=0,media=disk -m 128M -display gtk -serial file:serial.log -monitor none -no-reboot ${EXTRA_ARGS}
+  exec ${QEMU_BIN} -cdrom "${ISO}" -drive file="${DISK}",format=raw,if=ide,cache=none,index=0,media=disk -m 128M -display gtk -serial file:serial.log -monitor none -no-reboot ${EXTRA_ARGS}
 fi

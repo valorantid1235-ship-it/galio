@@ -19,6 +19,7 @@ SRCS = src/kernel.c src/kmain.c src/vga.c src/gdt.c src/idt.c src/irq.c src/isr.
 OBJS = $(SRCS:.c=.o) src/asm.o src/isr_asm.o boot/boot.o src/embedded_test.o src/embedded_initrd.o
 TEST_ELF = test_elf.bin
 INITRD_IMAGE = initrd.bin
+DISK_IMAGE = disk.img
 
 src/embedded_test.o: $(TEST_ELF)
 	objcopy -I binary -O elf32-i386 -B i386 $< $@
@@ -37,15 +38,21 @@ src/embedded_initrd.o: $(INITRD_IMAGE)
 
 .PHONY: all clean run disk
 
-all: galio.bin galio.iso disk.img
+all: galio.bin galio.iso $(DISK_IMAGE)
 
 galio.bin: $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-disk.img:
+$(DISK_IMAGE):
 	@echo "Creating 64MB disk image..."
-	@dd if=/dev/zero of=disk.img bs=1M count=64 2>/dev/null || true
-	@command -v mkfs.ext2 >/dev/null 2>&1 && mkfs.ext2 disk.img -q || echo "Warning: mkfs.ext2 not found, disk image created but not formatted"
+	@dd if=/dev/zero of=$(DISK_IMAGE) bs=1M count=64 2>/dev/null || { echo "Error: Failed to create disk image"; exit 1; }
+	@if command -v mkfs.ext2 >/dev/null 2>&1; then \
+		mkfs.ext2 -q $(DISK_IMAGE) >/dev/null 2>&1; \
+	elif command -v mke2fs >/dev/null 2>&1; then \
+		mke2fs -t ext2 -q $(DISK_IMAGE) >/dev/null 2>&1; \
+	else \
+		echo "Error: mkfs.ext2 or mke2fs not found in PATH"; exit 1; \
+	fi
 	@echo "Disk image created and formatted as ext2"
 
 galio.iso: galio.bin
@@ -70,8 +77,8 @@ src/isr_asm.o: src/isr_asm.s
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f galio.bin galio.iso disk.img $(OBJS) tools/mkiofs $(INITRD_IMAGE)
+	rm -f galio.bin galio.iso $(DISK_IMAGE) $(OBJS) tools/mkiofs $(INITRD_IMAGE)
 	rm -rf iso
 
-run: galio.bin
-	qemu-system-i386 -kernel galio.bin -m 128M -serial stdio
+run: galio.iso $(DISK_IMAGE)
+	./run.sh

@@ -93,6 +93,12 @@ i32 ext2_read_block(u32 block_num, void *buffer);
 /* Write data block */
 i32 ext2_write_block(u32 block_num, const void *buffer);
 
+/* Get current EXT2 block size */
+u32 ext2_get_block_size(void);
+
+/* Read file data from disk */
+i32 ext2_read_data(u32 inode_num, void *buffer, u32 size, u32 offset);
+
 /* Find inode by path */
 u32 ext2_find_inode(const char *path);
 

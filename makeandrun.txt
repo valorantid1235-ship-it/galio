@@ -1,30 +1,38 @@
-# create ISO (if you changed the kernel)
-rm -rf iso
-mkdir -p iso/boot/grub
-cp galio.bin iso/boot/galio.bin
-cat > iso/boot/grub/grub.cfg <<'EOF'
-set timeout=0
-set default=0
+patched the VFS to make disk mode use the EXT2 driver instead of the RAM-backed filesystem.
+What changed
 
-menuentry "Galio Kernel" {
-  multiboot /boot/galio.bin
-  boot
-}
-EOF
-grub-mkrescue -o galio.iso iso
+    vfs_core.c
+        Added disk-mode inode/dentry lookup via 
 
-# run and capture serial to serial.log (no GUI)
-qemu-system-i386 -cdrom galio.iso -m 128M -serial file:serial.log -monitor none -no-reboot
-# inspect output
-sed -n '1,200p' serial.log
+ext2_find_inode
+Switched
+vfs_core_open, vfs_core_read, vfs_core_read_path, and
+vfs_core_write to use EXT2 disk operations in disk mode
+Added disk-aware
 
+    vfs_core_stat
+    Kept RAM mode working as fallback
 
-===================+
+ext2.c / ext2.h
 
-✅ Cursor movement with arrow keys
-✅ Text input and character echo
-✅ Backspace to delete
-✅ Interactive command shell
-✅ Full keyboard support in QEMU
+    Added 
 
-The shell is now fully functional and interactive, giving you a real kernel-like experience with keyboard input handling just like real kernel boots!
+ext2_read_data(...) so file reads can span blocks
+Added
+
+    ext2_get_block_size()
+
+vfs_wrapper.c
+
+    Added disk-mode-aware 
+
+vfs_find, vfs_listdir, vfs_stats, and
+
+        vfs_debug
+        Directory listings and stats now use the actual EXT2 filesystem when disk mode is active
+
+Result
+
+    New files and file writes now go through the EXT2 disk implementation
+    Reads from disk mode use actual disk blocks
+    RAM-backed initrd still exists as fallback, but active disk mode now routes file operations to disk

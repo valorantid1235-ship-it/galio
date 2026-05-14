@@ -11,16 +11,42 @@ static u16 ata_ctrl_base = ATA_PRIMARY_CTRL;
 static u32 ata_sector_count = 0;  /* Total sectors on disk */
 static u32 ata_initialized = 0;
 
-/* Wait for disk to be ready */
+/* Wait for disk to be ready with timeout and status checking */
 static i32 ata_wait(u8 mask, u8 value) {
     for (u32 i = 0; i < ATA_TIMEOUT; i++) {
         u8 status = inb(ata_io_base + ATA_STATUS);
-        if ((status & mask) == value) {
-            return 0;
-        }
+        
+        /* Check for error */
         if (status & ATA_STATUS_ERR) {
             return -1;
         }
+        
+        /* Check for desired status */
+        if ((status & mask) == value) {
+            return 0;
+        }
+        
+        /* Small delay */
+        for (volatile int j = 0; j < 10; j++);
+    }
+    return -1;
+}
+
+/* Wait for drive to be ready (no busy, ready set) */
+static i32 ata_wait_ready(void) {
+    for (u32 i = 0; i < ATA_TIMEOUT; i++) {
+        u8 status = inb(ata_io_base + ATA_STATUS);
+        
+        if (status & ATA_STATUS_ERR) {
+            kprintf("ATA: Error status: %x\n", status);
+            return -1;
+        }
+        
+        if (!(status & ATA_STATUS_BSY) && (status & ATA_STATUS_RDY)) {
+            return 0;
+        }
+        
+        for (volatile int j = 0; j < 10; j++);
     }
     return -1;
 }
@@ -45,22 +71,41 @@ void ata_init(void) {
 
     /* Reset the controller */
     outb(ata_ctrl_base, 0x04);  /* Software reset */
+    for (volatile int i = 0; i < 1000; i++);  /* Short delay */
     outb(ata_ctrl_base, 0x00);  /* Clear reset */
-
-    /* Wait for drive to be ready */
-    if (ata_wait(ATA_STATUS_RDY, ATA_STATUS_RDY) != 0) {
-        kprintf("ATA: Drive not ready\n");
+    
+    /* Wait for drive to be ready after reset */
+    for (volatile int i = 0; i < 100000; i++);  /* Longer delay for drive to spin up */
+    
+    if (ata_wait_ready() != 0) {
+        kprintf("ATA: Drive not ready after reset\n");
         return;
     }
 
-    /* Identify drive */
-    ata_select_drive(0);
+    kprintf("ATA: Drive ready, sending IDENTIFY command...\n");
+
+    /* Select master drive */
+    outb(ata_io_base + ATA_DRIVE, 0xA0);  /* LBA mode, master */
+    for (volatile int i = 0; i < 100; i++);
+    
+    /* Send IDENTIFY command */
     outb(ata_io_base + ATA_COMMAND, ATA_CMD_IDENTIFY);
-
+    
+    /* Wait for DRQ or error */
     if (ata_wait(ATA_STATUS_DRQ, ATA_STATUS_DRQ) != 0) {
-        kprintf("ATA: Identify failed\n");
+        /* Check if device exists by reading status */
+        u8 status = inb(ata_io_base + ATA_STATUS);
+        if (status == 0xFF) {
+            kprintf("ATA: No device present (status=0xFF)\n");
+        } else if (status & ATA_STATUS_ERR) {
+            kprintf("ATA: Identify command failed with error\n");
+        } else {
+            kprintf("ATA: Identify timeout, status=%x\n", status);
+        }
         return;
     }
+
+    kprintf("ATA: IDENTIFY command succeeded, reading data...\n");
 
     /* Read identify data */
     u16 identify[256];
@@ -68,64 +113,97 @@ void ata_init(void) {
         identify[i] = inw(ata_io_base + ATA_DATA);
     }
 
+    /* Check if device is present (signature) */
+    if (identify[0] == 0 || identify[0] == 0xFFFF) {
+        kprintf("ATA: Invalid identify data, signature=0x%x\n", identify[0]);
+        return;
+    }
+
     ata_sector_count = identify[60] | (identify[61] << 16);
     ata_initialized = 1;
     
     if (ata_sector_count > 0) {
-        kprintf("ATA: Disk identified, %u sectors (%u MB)\n", ata_sector_count, (ata_sector_count * 512) / (1024 * 1024));
+        kprintf("ATA: Disk identified, %u sectors (%u MB)\n", 
+                ata_sector_count, (ata_sector_count * 512) / (1024 * 1024));
     } else {
-        kprintf("ATA: Warning - sector count is 0\n");
+        kprintf("ATA: Warning - sector count is 0, using fallback\n");
         ata_sector_count = 1024 * 1024;  /* Fallback to 512 MB */
     }
 
-    kprintf("ATA driver initialized\n");
+    kprintf("ATA driver initialized successfully\n");
 }
 
 i32 ata_read_sectors(u32 lba, u32 count, void *buffer) {
+    if (!ata_initialized) {
+        kprintf("ATA: Cannot read, driver not initialized\n");
+        return -1;
+    }
+    
+    kprintf("ATA: read_sectors: LBA=%u, count=%u\n", lba, count);
+    
     u16 *buf = (u16 *)buffer;
-
+    
     for (u32 i = 0; i < count; i++) {
-        ata_set_lba(lba + i);
-        outb(ata_io_base + ATA_COMMAND, ATA_CMD_READ_SECTORS);
-
-        if (ata_wait(ATA_STATUS_DRQ, ATA_STATUS_DRQ) != 0) {
-            kprintf("ATA: Read timeout\n");
+        /* Wait for drive ready */
+        if (ata_wait_ready() != 0) {
+            kprintf("ATA: Read timeout - drive not ready at LBA %u\n", lba + i);
             return -1;
         }
-
+        
+        ata_set_lba(lba + i);
+        outb(ata_io_base + ATA_COMMAND, ATA_CMD_READ_SECTORS);
+        
+        if (ata_wait(ATA_STATUS_DRQ, ATA_STATUS_DRQ) != 0) {
+            kprintf("ATA: Read timeout at LBA %u\n", lba + i);
+            return -1;
+        }
+        
         /* Read 256 words (512 bytes) */
         for (int j = 0; j < 256; j++) {
             buf[i * 256 + j] = inw(ata_io_base + ATA_DATA);
         }
     }
-
+    
+    kprintf("ATA: read_sectors successful\n");
     return count;
 }
 
 i32 ata_write_sectors(u32 lba, u32 count, const void *buffer) {
+    if (!ata_initialized) {
+        kprintf("ATA: Cannot write, driver not initialized\n");
+        return -1;
+    }
+    
+    kprintf("ATA: Writing %u sectors at LBA %u\n", count, lba);
     const u16 *buf = (const u16 *)buffer;
-
+    
     for (u32 i = 0; i < count; i++) {
-        ata_set_lba(lba + i);
-        outb(ata_io_base + ATA_COMMAND, ATA_CMD_WRITE_SECTORS);
-
-        if (ata_wait(ATA_STATUS_DRQ, ATA_STATUS_DRQ) != 0) {
-            kprintf("ATA: Write timeout\n");
+        /* Wait for drive ready */
+        if (ata_wait_ready() != 0) {
+            kprintf("ATA: Write timeout - drive not ready at LBA %u\n", lba + i);
             return -1;
         }
-
-        /* Write 256 words (512 bytes) */
+        
+        ata_set_lba(lba + i);
+        outb(ata_io_base + ATA_COMMAND, ATA_CMD_WRITE_SECTORS);
+        
+        if (ata_wait(ATA_STATUS_DRQ, ATA_STATUS_DRQ) != 0) {
+            kprintf("ATA: Write timeout at LBA %u\n", lba + i);
+            return -1;
+        }
+        
         for (int j = 0; j < 256; j++) {
             outw(ata_io_base + ATA_DATA, buf[i * 256 + j]);
         }
-
+        
         /* Wait for write to complete */
         if (ata_wait(ATA_STATUS_BSY, 0) != 0) {
-            kprintf("ATA: Write completion timeout\n");
+            kprintf("ATA: Write completion timeout at LBA %u\n", lba + i);
             return -1;
         }
     }
-
+    
+    kprintf("ATA: Write completed successfully (%u sectors)\n", count);
     return count;
 }
 

@@ -1,9 +1,13 @@
 /* vfs_wrapper.c - VFS public API wrappers for the new core engine */
 #include "vfs.h"
 #include "vfs_core.h"
+#include "ext2.h"
+#include "heap.h"
 #include "kprintf.h"
 #include "pit.h"
 #include "string.h"
+
+extern u32 block_size;  /* Add this line - defined in ext2.c */
 
 vfs_header_t *vfs_root = NULL;
 static vfs_entry_t compat_entries[32];
@@ -80,9 +84,31 @@ void vfs_init(void *initrd_addr) {
     kprintf("[VFS] - Version: %u\n", vfs_root->version);
 }
 
+static vfs_entry_t *build_compat_entry_for_disk(u32 inode_num, const char *path) {
+    if (inode_num == 0 || !path) return NULL;
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return NULL;
+
+    vfs_entry_t *entry = &compat_entries[compat_index++ % 32];
+    char normalized[VFS_MAX_PATH];
+    strncpy(normalized, path_normalize(path), VFS_MAX_PATH - 1);
+    normalized[VFS_MAX_PATH - 1] = 0;
+    strncpy(entry->path, normalized, VFS_MAX_PATH - 1);
+    entry->path[VFS_MAX_PATH - 1] = 0;
+    entry->size = inode.size;
+    entry->is_dir = (inode.mode & 0x4000) ? 1 : 0;
+    entry->offset = inode.block[0];
+    entry->permissions = entry->is_dir ? 0755 : 0644;
+    return entry;
+}
+
 vfs_entry_t *vfs_find(const char *path) {
     if (!vfs_root || !path) return NULL;
     char *norm_path = path_normalize(path);
+    if (vfs_core_is_disk_mode()) {
+        u32 inode_num = ext2_find_inode(norm_path);
+        return build_compat_entry_for_disk(inode_num, norm_path);
+    }
     vfs_dentry_t *dentry = vfs_core_lookup(norm_path, 0);
     vfs_entry_t *result = build_compat_entry(dentry, norm_path);
     return result;
@@ -139,21 +165,161 @@ const char *vfs_basename(const char *path) {
     return buf;
 }
 
+static void vfs_listdir_disk(const char *path) {
+    u32 inode_num = ext2_find_inode(path);
+    if (inode_num == 0) {
+        kprintf("[VFS] ERROR: Directory not found: %s\n", path);
+        return;
+    }
+
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) {
+        kprintf("[VFS] ERROR: Cannot read directory inode: %s\n", path);
+        return;
+    }
+
+    if (!(inode.mode & 0x4000)) {
+        kprintf("[VFS] ERROR: Not a directory: %s\n", path);
+        return;
+    }
+
+    u32 blk_size = ext2_get_block_size();
+    u8 *buffer = kmalloc(blk_size);
+    if (!buffer) {
+        kprintf("[VFS] ERROR: Out of memory listing directory\n");
+        return;
+    }
+
+    kprintf("Directory listing: %s\n", path);
+    u32 dir_count = 0;
+    u32 file_count = 0;
+    u32 total_dir_size = 0;
+
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        if (ext2_read_block(inode.block[i], buffer) != 0) continue;
+        u32 offset = 0;
+        while (offset < blk_size) {
+            ext2_dirent_t *dent = (ext2_dirent_t *)(buffer + offset);
+            if (dent->inode == 0 || dent->rec_len == 0) break;
+            if (dent->name_len > 0) {
+                char name[256];
+                u32 name_len = dent->name_len;
+                if (name_len >= sizeof(name)) {
+                    name_len = sizeof(name) - 1;
+                }
+                memcpy(name, dent->name, name_len);
+                name[name_len] = 0;
+                if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                    if (dent->file_type == 2) {
+                        kprintf("    [DIR]  %s/\n", name);
+                        dir_count++;
+                    } else {
+                        ext2_inode_t child_inode;
+                        u32 child_size = 0;
+                        if (ext2_read_inode(dent->inode, &child_inode) == 0) {
+                            child_size = child_inode.size;
+                        }
+                        kprintf("    [FILE] %s (%u bytes)\n", name, child_size);
+                        file_count++;
+                        total_dir_size += child_size;
+                    }
+                }
+            }
+            offset += dent->rec_len;
+        }
+    }
+    kfree(buffer);
+
+    kprintf("    ─────────────────────────────────────────────\n");
+    kprintf("    Dirs: %u | Files: %u | Total size: %u bytes\n",
+            dir_count, file_count, total_dir_size);
+}
+
 void vfs_listdir(const char *path) {
     if (!vfs_root) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
         return;
     }
+    
     char *norm_path = path_normalize(path);
+    
+    /* Handle disk mode separately using EXT2 directly */
+    if (vfs_core_is_disk_mode()) {
+        u32 dir_inode = ext2_find_inode(norm_path);
+        if (dir_inode == 0) {
+            kprintf("[VFS] ERROR: Directory not found: %s\n", path);
+            return;
+        }
+        
+        ext2_inode_t inode;
+        if (ext2_read_inode(dir_inode, &inode) != 0) {
+            kprintf("[VFS] ERROR: Cannot read directory inode: %s\n", path);
+            return;
+        }
+        
+        if (!(inode.mode & 0x4000)) {
+            kprintf("[VFS] ERROR: Not a directory: %s\n", path);
+            return;
+        }
+        
+        kprintf("Directory listing: %s\n", norm_path);
+        u32 dir_count = 0;
+        u32 file_count = 0;
+        u32 total_dir_size = 0;
+        
+        /* Read directory blocks */
+        u8 buffer[block_size];
+        for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+            if (ext2_read_block(inode.block[i], buffer) != 0) continue;
+            
+            ext2_dirent_t *dent = (ext2_dirent_t *)buffer;
+            while ((u8 *)dent < buffer + block_size) {
+                if (dent->inode == 0 || dent->name_len == 0) {
+                    dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+                    continue;
+                }
+                
+                char name[256];
+                u32 name_len = dent->name_len;
+                if (name_len > 255) name_len = 255;
+                memcpy(name, dent->name, name_len);
+                name[name_len] = 0;
+                
+                if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                    ext2_inode_t child_inode;
+                    if (ext2_read_inode(dent->inode, &child_inode) == 0) {
+                        if (child_inode.mode & 0x4000) {
+                            kprintf("    [DIR]  %s/\n", name);
+                            dir_count++;
+                        } else {
+                            kprintf("    [FILE] %s (%u bytes)\n", name, child_inode.size);
+                            file_count++;
+                            total_dir_size += child_inode.size;
+                        }
+                    }
+                }
+                dent = (ext2_dirent_t *)((u8 *)dent + dent->rec_len);
+            }
+        }
+        
+        kprintf("    ─────────────────────────────────────────────\n");
+        kprintf("    Dirs: %u | Files: %u | Total size: %u bytes\n",
+                dir_count, file_count, total_dir_size);
+        return;
+    }
+    
+    /* RAM mode - original code */
     vfs_dentry_t *dentry = vfs_core_lookup(norm_path, 0);
     if (!dentry || !dentry->inode || dentry->inode->mode != VFS_TYPE_DIR) {
         kprintf("[VFS] ERROR: Directory not found: %s\n", path);
         return;
     }
+    
     kprintf("Directory listing: %s\n", norm_path);
     u32 dir_count = 0;
     u32 file_count = 0;
     u32 total_dir_size = 0;
+    
     for (u32 i = 0; i < dentry->inode->dirent_count; i++) {
         vfs_core_dirent_t *dent = &dentry->inode->dirents[i];
         if (strcmp(dent->name, ".") == 0 || strcmp(dent->name, "..") == 0) continue;
@@ -168,6 +334,7 @@ void vfs_listdir(const char *path) {
             total_dir_size += child->size;
         }
     }
+    
     kprintf("    ─────────────────────────────────────────────\n");
     kprintf("    Dirs: %u | Files: %u | Total size: %u bytes\n",
             dir_count, file_count, total_dir_size);
@@ -224,9 +391,81 @@ static void vfs_stats_recurse(vfs_dentry_t *node, u32 *dir_count, u32 *file_coun
     }
 }
 
+static void vfs_stats_disk_recursive(const char *current_path, u32 *dirs, u32 *files, u32 *total_data_size) {
+    u32 inode_num = ext2_find_inode(current_path);
+    if (inode_num == 0) return;
+
+    ext2_inode_t inode;
+    if (ext2_read_inode(inode_num, &inode) != 0) return;
+    if (!(inode.mode & 0x4000)) return;
+
+    u32 blk_size = ext2_get_block_size();
+    u8 *buffer = kmalloc(blk_size);
+    if (!buffer) return;
+
+    for (u32 i = 0; i < 12 && inode.block[i]; i++) {
+        if (ext2_read_block(inode.block[i], buffer) != 0) continue;
+        u32 offset = 0;
+        while (offset < blk_size) {
+            ext2_dirent_t *dent = (ext2_dirent_t *)(buffer + offset);
+            if (dent->inode == 0 || dent->rec_len == 0) break;
+            if (dent->name_len > 0) {
+                char name[256];
+                u32 name_len = dent->name_len;
+                if (name_len >= sizeof(name)) {
+                    name_len = sizeof(name) - 1;
+                }
+                memcpy(name, dent->name, name_len);
+                name[name_len] = 0;
+                if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                    ext2_inode_t child_inode;
+                    if (ext2_read_inode(dent->inode, &child_inode) == 0) {
+                        if (child_inode.mode & 0x4000) {
+                            (*dirs)++;
+                            char next_path[VFS_MAX_PATH];
+                            next_path[0] = 0;
+                            if (strcmp(current_path, "/") == 0) {
+                                strncpy(next_path, "/", VFS_MAX_PATH - 1);
+                                next_path[VFS_MAX_PATH - 1] = 0;
+                            } else {
+                                strncpy(next_path, current_path, VFS_MAX_PATH - 1);
+                                next_path[VFS_MAX_PATH - 1] = 0;
+                            }
+                            if (strlen(next_path) + 1 + name_len < VFS_MAX_PATH) {
+                                if (strcmp(next_path, "/") != 0) {
+                                    strncat(next_path, "/", VFS_MAX_PATH - strlen(next_path) - 1);
+                                }
+                                strncat(next_path, name, VFS_MAX_PATH - strlen(next_path) - 1);
+                                vfs_stats_disk_recursive(next_path, dirs, files, total_data_size);
+                            }
+                        } else {
+                            (*files)++;
+                            *total_data_size += child_inode.size;
+                        }
+                    }
+                }
+            }
+            offset += dent->rec_len;
+        }
+    }
+    kfree(buffer);
+}
+
 void vfs_stats(void) {
     if (!vfs_root) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return;
+    }
+    if (vfs_core_is_disk_mode()) {
+        u32 dirs = 0, files = 0, total_data_size = 0;
+        vfs_stats_disk_recursive("/", &dirs, &files, &total_data_size);
+        kprintf("[VFS] Filesystem Statistics (disk mode):\n");
+        kprintf("    Total entries:    %u\n", dirs + files);
+        kprintf("    Directories:      %u\n", dirs);
+        kprintf("    Files:            %u\n", files);
+        kprintf("    Total data size:  %u bytes (%.2f KB)\n",
+                total_data_size, (float)total_data_size / 1024.0);
+        kprintf("    Mode:             disk-backed EXT2\n");
         return;
     }
     u32 dirs = 0, files = 0, total_data_size = 0;
@@ -244,6 +483,10 @@ void vfs_stats(void) {
 void vfs_debug(void) {
     if (!vfs_root) {
         kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return;
+    }
+    if (vfs_core_is_disk_mode()) {
+        kprintf("[VFS] Debug: disk-backed EXT2 filesystem active\n");
         return;
     }
     vfs_dentry_t *root = vfs_core_root();

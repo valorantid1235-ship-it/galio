@@ -4,8 +4,12 @@
 #include "vfs.h"
 #include "common.h"
 
+/* VFS internal type flags - independent of EXT2 modes */
 #define VFS_TYPE_FILE 1
 #define VFS_TYPE_DIR 2
+
+/* Directory bit in EXT2 mode (used for detection) */
+#define EXT2_TYPE_DIR 0x4000
 
 #define VFS_MAX_INODES 1024
 #define VFS_MAX_DENTRIES 1024
@@ -61,6 +65,7 @@ void vfs_core_init(void *initrd_addr);
 vfs_dentry_t *vfs_core_lookup(const char *path, u32 flags);
 vfs_dentry_t *vfs_core_root(void);
 void vfs_core_build_path(vfs_dentry_t *dentry, char *buffer);
+void vfs_core_reload_root_from_disk(void);
 vfs_inode_t *vfs_core_inode_by_number(u32 inode_number);
 u32 vfs_core_open(const char *path);
 u32 vfs_core_close(u32 fd);
@@ -76,5 +81,6 @@ u32 vfs_core_unlink(const char *path);
 
 void vfs_core_init_disk_mode(void);
 u8 vfs_core_is_disk_mode(void);
+u8 vfs_core_is_directory(u32 inode_num);
 
 #endif /* VFS_CORE_H */
