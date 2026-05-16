@@ -207,6 +207,37 @@ i32 ata_write_sectors(u32 lba, u32 count, const void *buffer) {
     return count;
 }
 
+i32 ata_flush_cache(void) {
+    if (!ata_initialized) {
+        kprintf("ATA: Cannot flush cache, driver not initialized\n");
+        return -1;
+    }
+    
+    kprintf("ATA: Flushing write cache to disk...\n");
+    
+    /* Wait for drive to be ready */
+    if (ata_wait_ready() != 0) {
+        kprintf("ATA: Drive not ready for cache flush\n");
+        return -1;
+    }
+    
+    /* Select master drive */
+    outb(ata_io_base + ATA_DRIVE, 0xA0);
+    for (volatile int i = 0; i < 100; i++);
+    
+    /* Issue CACHE FLUSH command */
+    outb(ata_io_base + ATA_COMMAND, ATA_CMD_CACHE_FLUSH);
+    
+    /* Wait for command to complete */
+    if (ata_wait(ATA_STATUS_BSY, 0) != 0) {
+        kprintf("ATA: Cache flush timeout\n");
+        return -1;
+    }
+    
+    kprintf("ATA: Cache flushed successfully\n");
+    return 0;
+}
+
 u32 ata_get_sectors(void) {
     return ata_initialized ? ata_sector_count : 0;
 }

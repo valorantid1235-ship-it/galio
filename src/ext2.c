@@ -125,6 +125,31 @@ i32 ext2_init(void) {
     return 0;
 }
 
+/* Force sync all metadata to disk - ensures all pending writes are flushed */
+i32 ext2_fsync(void) {
+    kprintf("[EXT2] Flushing filesystem to disk...\n");
+    
+    /* Write superblock and group descriptors to ensure all metadata is persisted */
+    if (ext2_write_superblock() != 0) {
+        kprintf("[EXT2] fsync: Failed to write superblock\n");
+        return -1;
+    }
+    
+    if (ext2_write_group_descriptors() != 0) {
+        kprintf("[EXT2] fsync: Failed to write group descriptors\n");
+        return -1;
+    }
+    
+    /* Flush the ATA write cache to ensure data reaches the physical disk */
+    if (ata_flush_cache() != 0) {
+        kprintf("[EXT2] fsync: Warning - ATA cache flush failed\n");
+        return -1;
+    }
+    
+    kprintf("[EXT2] Filesystem sync complete\n");
+    return 0;
+}
+
 /* Initialize root inode (inode 2) if it's not properly set up */
 static i32 ext2_initialize_root_inode(void) {
     ext2_inode_t root_inode;
@@ -247,11 +272,32 @@ i32 ext2_read_data(u32 inode_num, void *buffer, u32 size, u32 offset) {
     u32 block_offset = offset / block_size;
     u32 block_inner_offset = offset % block_size;
     u32 total_read = 0;
-    u8 tmp_block[block_size];
-    while (bytes_left > 0 && block_offset < 12) {
-        u32 current_block = inode.block[block_offset];
+    u8 tmp_block[4096];
+    u8 indirect_buffer[4096];
+    u32 blocks_per_indirect = block_size / 4;
+    
+    while (bytes_left > 0) {
+        u32 current_block = 0;
+        
+        /* Direct blocks (0-11) */
+        if (block_offset < 12) {
+            current_block = inode.block[block_offset];
+        }
+        /* Single indirect block (block 12) */
+        else if (block_offset < 12 + blocks_per_indirect) {
+            if (inode.block[12] == 0) break;
+            if (read_block(inode.block[12], indirect_buffer) != 0) break;
+            u32 indirect_index = block_offset - 12;
+            u32 *indirect_ptrs = (u32 *)indirect_buffer;
+            current_block = indirect_ptrs[indirect_index];
+        }
+        else {
+            break;  /* Beyond what we support */
+        }
+        
         if (current_block == 0) break;
-        if (read_block(current_block, tmp_block) < 0) return -1;
+        if (read_block(current_block, tmp_block) < 0) break;
+        
         u32 chunk = block_size - block_inner_offset;
         if (chunk > bytes_left) chunk = bytes_left;
         memcpy((u8 *)buffer + total_read, tmp_block + block_inner_offset, chunk);
@@ -574,45 +620,114 @@ i32 ext2_write_data(u32 inode_num, const void *buffer, u32 size) {
         kprintf("[EXT2] write_data: cannot read inode %u\n", inode_num);
         return -1;
     }
+    
     u32 written = 0;
     u32 block_offset = 0;
+    u32 blocks_per_indirect = block_size / 4;  /* 4-byte pointers */
     const u8 *data = (const u8 *)buffer;
     u8 block_buffer[4096];
+    u8 indirect_buffer[4096];
+    
     while (written < size) {
         u32 to_write = size - written;
         if (to_write > block_size) to_write = block_size;
-        i32 block_num;
-        if (inode.block[block_offset] == 0) {
-            block_num = ext2_alloc_block();
-            if (block_num < 0) {
-                kprintf("[EXT2] write_data: out of blocks\n");
-                return written ? (i32)written : -1;
+        
+        i32 block_num = -1;
+        
+        /* Direct blocks (0-11) */
+        if (block_offset < 12) {
+            if (inode.block[block_offset] == 0) {
+                block_num = ext2_alloc_block();
+                if (block_num < 0) {
+                    kprintf("[EXT2] write_data: out of blocks (direct)\n");
+                    goto write_inode_and_return;
+                }
+                inode.block[block_offset] = block_num;
+            } else {
+                block_num = inode.block[block_offset];
             }
-            inode.block[block_offset] = block_num;
-            memset(block_buffer, 0, block_size);
-        } else {
-            block_num = inode.block[block_offset];
-            if (read_block(block_num, block_buffer) != 0) {
-                kprintf("[EXT2] write_data: failed to read existing block %u\n", block_num);
-                return -1;
-            }
+            block_offset++;
         }
-        memcpy(block_buffer, data + written, to_write);
-        if (write_block(block_num, block_buffer) != 0) {
-            kprintf("[EXT2] write_data: write_block failed\n");
+        /* Single indirect block (block 12) - supports blocks 12 to 12+blocks_per_indirect-1 */
+        else if (block_offset < 12 + blocks_per_indirect) {
+            /* Allocate single indirect block if needed */
+            if (inode.block[12] == 0) {
+                inode.block[12] = ext2_alloc_block();
+                if ((i32)inode.block[12] < 0) {
+                    kprintf("[EXT2] write_data: out of blocks (indirect block allocation)\n");
+                    goto write_inode_and_return;
+                }
+                memset(indirect_buffer, 0, block_size);
+            } else {
+                if (read_block(inode.block[12], indirect_buffer) != 0) {
+                    kprintf("[EXT2] write_data: failed to read indirect block\n");
+                    return -1;
+                }
+            }
+            
+            u32 indirect_index = block_offset - 12;
+            u32 *indirect_ptrs = (u32 *)indirect_buffer;
+            
+            if (indirect_ptrs[indirect_index] == 0) {
+                block_num = ext2_alloc_block();
+                if (block_num < 0) {
+                    kprintf("[EXT2] write_data: out of blocks (indirect data)\n");
+                    goto write_inode_and_return;
+                }
+                indirect_ptrs[indirect_index] = block_num;
+                /* Write back the indirect block */
+                if (write_block(inode.block[12], indirect_buffer) != 0) {
+                    kprintf("[EXT2] write_data: failed to write indirect block\n");
+                    return -1;
+                }
+            } else {
+                block_num = indirect_ptrs[indirect_index];
+            }
+            block_offset++;
+        }
+        else {
+            kprintf("[EXT2] write_data: file too large (max ~4MB with current impl)\n");
+            goto write_inode_and_return;
+        }
+        
+        /* Read existing block or create new */
+        if (block_num < 0) {
+            kprintf("[EXT2] write_data: invalid block number\n");
             return -1;
         }
+        
+        memset(block_buffer, 0, block_size);
+        if (read_block(block_num, block_buffer) != 0) {
+            kprintf("[EXT2] write_data: failed to read block %u\n", block_num);
+            return -1;
+        }
+        
+        memcpy(block_buffer, data + written, to_write);
+        if (write_block(block_num, block_buffer) != 0) {
+            kprintf("[EXT2] write_data: write_block failed for block %u\n", block_num);
+            return -1;
+        }
+        
         written += to_write;
-        block_offset++;
-        if (block_offset >= 12) break;
     }
+    
+write_inode_and_return:
     inode.size = written;
     inode.blocks = (written + 511) / 512;
     if (ext2_write_inode(inode_num, &inode) != 0) {
         kprintf("[EXT2] write_data: write_inode failed\n");
-        return -1;
+        return written > 0 ? (i32)written : -1;
     }
-    kprintf("[EXT2] write_data: wrote %u bytes to inode %u\n", written, inode_num);
+    
+    /* Force sync to ensure metadata is written */
+    if (ext2_write_superblock() != 0) {
+        kprintf("[EXT2] write_data: failed to sync superblock\n");
+    }
+    if (ext2_write_group_descriptors() != 0) {
+        kprintf("[EXT2] write_data: failed to sync group descriptors\n");
+    }
+    
+    kprintf("[EXT2] write_data: wrote %u bytes to inode %u (synced to disk)\n", written, inode_num);
     return written;
 }
 

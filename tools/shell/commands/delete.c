@@ -132,5 +132,9 @@ u8 shell_delete_command(const char *args, const char *current_dir, u8 privileged
         arg_start = skip_spaces(arg_end);
     }
 
+    if (success) {
+        vfs_fsync();  /* Ensure deletions are written to disk */
+    }
+    
     return success;
 }

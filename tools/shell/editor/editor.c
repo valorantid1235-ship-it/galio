@@ -210,6 +210,8 @@ u8 shell_editor(const char *filepath) {
             kprintf("\n>>> SAVING... <<<\n");
             
             if (vfs_write_file(filepath, (u8*)buf.content, buf.size)) {
+                /* Force filesystem sync to ensure data is written to disk */
+                vfs_fsync();
                 kprintf(">>> SAVED! <<<\n");
             } else {
                 kprintf(">>> SAVE FAILED! <<<\n");

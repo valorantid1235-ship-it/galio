@@ -64,5 +64,6 @@ u8 shell_clean_command(const char *args, const char *current_dir) {
     }
 
     kprintf("[CLEAN] Directory cleared: %s\n", fullpath);
+    vfs_fsync();  /* Ensure cleanup is written to disk */
     return 1;
 }

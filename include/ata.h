@@ -24,6 +24,7 @@
 #define ATA_CMD_READ_SECTORS  0x20
 #define ATA_CMD_WRITE_SECTORS 0x30
 #define ATA_CMD_IDENTIFY      0xEC
+#define ATA_CMD_CACHE_FLUSH   0xE7
 
 #define ATA_STATUS_BSY  0x80
 #define ATA_STATUS_RDY  0x40
@@ -38,6 +39,9 @@ i32 ata_read_sectors(u32 lba, u32 count, void *buffer);
 
 /* Write sectors to disk */
 i32 ata_write_sectors(u32 lba, u32 count, const void *buffer);
+
+/* Flush disk write cache to ensure data is written to physical media */
+i32 ata_flush_cache(void);
 
 /* Get disk size in sectors */
 u32 ata_get_sectors(void);

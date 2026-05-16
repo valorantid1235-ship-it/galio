@@ -197,5 +197,9 @@ u8 shell_file_command(const char *args, const char *current_dir, u8 replace) {
         ptr = end + 1;
     }
 
+    if (any_success) {
+        vfs_fsync();  /* Ensure files are written to disk */
+    }
+    
     return any_success;
 }

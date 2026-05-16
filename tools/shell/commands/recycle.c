@@ -276,5 +276,9 @@ u8 shell_recycle_command(const char *args, const char *current_dir, u8 privilege
         arg_start = skip_spaces(arg_end);
     }
 
+    if (success) {
+        vfs_fsync();  /* Ensure recycle operations are written to disk */
+    }
+    
     return success;
 }

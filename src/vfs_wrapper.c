@@ -876,3 +876,21 @@ u32 vfs_stat(const char *path, void *statbuf) {
     }
     return vfs_core_stat(path, statbuf);
 }
+
+/* Force all filesystem data to disk - ensures persistence */
+u32 vfs_fsync(void) {
+    if (!vfs_root) {
+        kprintf("[VFS] ERROR: Filesystem not mounted\n");
+        return 0;
+    }
+    if (vfs_core_is_disk_mode()) {
+        if (ext2_fsync() == 0) {
+            kprintf("[VFS] Filesystem sync complete\n");
+            return 1;
+        }
+        kprintf("[VFS] ERROR: Filesystem sync failed\n");
+        return 0;
+    }
+    kprintf("[VFS] RAM mode: no disk sync needed\n");
+    return 1;
+}

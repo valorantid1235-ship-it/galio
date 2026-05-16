@@ -90,6 +90,9 @@ u32 vfs_dir_size(const char *path);
  u32 vfs_remove_dir_contents(const char *path);
  u32 vfs_cleanup_old_recycle_bin(const char *path, u32 age_ticks);
 
+/* Sync operations - force filesystem to disk */
+ u32 vfs_fsync(void);
+
 /* File descriptor structure */
 typedef struct {
     u32 inode;
